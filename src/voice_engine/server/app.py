@@ -42,7 +42,7 @@ def _load_optional_provider(kind: str, name: str) -> None:
 _load_optional_provider("tts", settings.tts)
 _load_optional_provider("stt", settings.stt)
 _load_optional_provider("llm", settings.llm)
-app = FastAPI(title="Open Voice Engine", version="0.2.0")
+app = FastAPI(title="Open Voice Engine", version="0.1.0")
 _connection_count = 0
 _connection_lock = asyncio.Lock()
 BASE = Path(__file__).resolve().parents[3]

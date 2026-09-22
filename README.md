@@ -1,28 +1,16 @@
-# Open Voice Engine v0.2
+# Open Voice Engine
 
-An open-source, provider-agnostic realtime conversational voice runtime designed to be forked and embedded into applications.
+An open-source, provider-agnostic real-time conversational voice runtime designed for low latency, flexible integration, and high performance.
 
-## What changed in v0.2
+## Key Features
 
-- Explicit session state machine.
-- Generation IDs and stale-audio protection.
-- Robust idempotent barge-in cancellation.
-- Configurable VAD with hysteresis.
-- Streaming text chunker for lower TTS latency.
-- Provider registry/factory.
-- Prometheus metrics.
-- Structured JSON logging.
-- WebSocket authentication hooks.
-- Origin allow-list support.
-- Connection/session limits.
-- Audio frame validation and size limits.
-- Browser AudioWorklet playback.
-- Reference WebSocket client.
-- Deterministic mock providers.
-- Better disconnect/task cleanup.
-- Benchmark harness.
-- Health/readiness endpoints.
-- Cleaner SDK-oriented architecture.
+- **Provider-Agnostic Architecture**: Modular provider ecosystem supporting STT (faster-whisper, etc.), LLMs (Gemini, OpenAI-compatible /v1/completions, local models), and TTS (Kokoro, Deepgram Aura, Gemini).
+- **Low-Latency Streaming Pipeline**: Advanced text chunking and overlapped lookahead execution to minimize time-to-first-audio output.
+- **Instant Barge-in & Interruption**: Automatic server-driven Voice Activity Detection (VAD) with instant generation cancellation and stale-audio protection.
+- **Configurable VAD**: Energy-based VAD with live, per-connection threshold tuning and hysteresis.
+- **Production Observability**: Built-in Prometheus metrics, structured JSON logging, WebSocket authentication, origin allowlists, and connection limits.
+- **Reference Web Client**: Interactive browser UI featuring AudioWorklet low-latency playback, visual VAD sensitivity controls, and sample-rate simulation.
+- **Deterministic Mock Providers**: Complete offline testing support without needing external API keys.
 
 ## Quick start
 
