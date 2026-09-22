@@ -1,16 +1,15 @@
 # Open Voice Engine
 
-An open-source, provider-agnostic real-time conversational voice runtime designed for low latency, flexible integration, and high performance.
+A lightweight, provider-agnostic runtime for building real-time voice applications. It manages WebSocket audio streaming, Voice Activity Detection (VAD), user interruptions (barge-in), and connects STT, LLM, and TTS models into a low-latency pipeline.
 
-## Key Features
+## Features
 
-- **Provider-Agnostic Architecture**: Modular provider ecosystem supporting STT (faster-whisper, etc.), LLMs (Gemini, OpenAI-compatible /v1/completions, local models), and TTS (Kokoro, Deepgram Aura, Gemini).
-- **Low-Latency Streaming Pipeline**: Advanced text chunking and overlapped lookahead execution to minimize time-to-first-audio output.
-- **Instant Barge-in & Interruption**: Automatic server-driven Voice Activity Detection (VAD) with instant generation cancellation and stale-audio protection.
-- **Configurable VAD**: Energy-based VAD with live, per-connection threshold tuning and hysteresis.
-- **Production Observability**: Built-in Prometheus metrics, structured JSON logging, WebSocket authentication, origin allowlists, and connection limits.
-- **Reference Web Client**: Interactive browser UI featuring AudioWorklet low-latency playback, visual VAD sensitivity controls, and sample-rate simulation.
-- **Deterministic Mock Providers**: Complete offline testing support without needing external API keys.
+- **Provider-agnostic**: Easily switch between STT (Whisper), LLMs (Gemini, OpenAI-compatible APIs, local vLLM), and TTS (Kokoro, Deepgram, Gemini).
+- **Streaming pipeline**: Streams LLM text output into TTS in short phrases to start audio playback faster.
+- **Automatic barge-in**: Server-side VAD detects when the user speaks and instantly cancels in-flight audio generation.
+- **Live VAD tuning**: Adjust speech and silence detection thresholds on the fly per session.
+- **Built-in browser client**: Includes an HTML/JS test client with AudioWorklet playback and mic sensitivity sliders.
+- **Offline mock mode**: Built-in mock providers let you run and test the engine locally without any API keys.
 
 ## Quick start
 
