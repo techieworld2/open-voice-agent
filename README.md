@@ -21,13 +21,11 @@ pip install -e ".[dev]"
 voice-engine dev
 ```
 
-Open `http://localhost:8000`.
-
-The default providers are mock providers, so no API key is required.
+Open `http://localhost:8000`. The default providers are mock providers, so no API key is required.
 
 ## Switching providers
 
-The server picks providers via env vars (see `.env.example`):
+The server picks providers via environment variables (see `.env.example`):
 
 ```text
 VOICE_ENGINE_STT=mock
@@ -35,12 +33,7 @@ VOICE_ENGINE_LLM=mock
 VOICE_ENGINE_TTS=mock
 ```
 
-Setting `VOICE_ENGINE_TTS` (or `_STT`/`_LLM`) to anything other than `mock` imports
-`voice_engine.providers.<name>.<kind>` on startup so the provider's `@register`
-decorator runs, then constructs it via the registry. The core engine does not
-import optional providers unless they are selected.
-
-## Kokoro
+## Kokoro TTS
 
 ```bash
 pip install -e ".[kokoro]"
@@ -49,8 +42,6 @@ pip install -e ".[kokoro]"
 ```text
 VOICE_ENGINE_TTS=kokoro
 ```
-
-Or construct `LocalKokoroTTS` directly from Python.
 
 ## Gemini TTS and LLM
 
@@ -71,13 +62,7 @@ VOICE_ENGINE_GEMINI_LLM_MAX_TOKENS=200
 VOICE_ENGINE_GEMINI_LLM_TEMPERATURE=0.7
 ```
 
-`GeminiTTS` calls the Gemini API once per streamed text phrase and returns
-24kHz mono 16-bit PCM. `GeminiLLM` streams tokens from Gemini's async chat
-API and honors `VOICE_ENGINE_LLM_SYSTEM_PROMPT` (shared with the other LLM
-providers). Both share one `GEMINI_API_KEY`. Get a key at
-https://aistudio.google.com/apikey. Gemini model names change over time —
-if you get a 404 for a model, the API error message names the current
-replacement.
+`GeminiTTS` generates 24kHz mono PCM audio. `GeminiLLM` streams response tokens using Gemini's async chat API. Both utilize `GEMINI_API_KEY`.
 
 ## Deepgram Aura TTS
 
@@ -91,9 +76,7 @@ DEEPGRAM_API_KEY=your-key-here
 VOICE_ENGINE_DEEPGRAM_TTS_MODEL=aura-2-thalia-en
 ```
 
-`DeepgramTTS` calls the Deepgram `/v1/speak` REST endpoint once per streamed
-text phrase, requesting raw `linear16` PCM at 24kHz. Get an API key at
-https://console.deepgram.com.
+`DeepgramTTS` streams 24kHz linear16 PCM via Deepgram's `/v1/speak` endpoint.
 
 ## Local faster-whisper STT
 
@@ -110,35 +93,13 @@ VOICE_ENGINE_WHISPER_NO_SPEECH_THRESHOLD=0.6
 VOICE_ENGINE_WHISPER_LOGPROB_THRESHOLD=-1.0
 ```
 
-`FasterWhisperSTT` buffers one full utterance (the audio between the VAD's
-`speech_started`/`speech_ended` events) and transcribes it in a single
-blocking call, run off the event loop via `asyncio.to_thread`. The model is
-cached per `(model_size, device, compute_type)` so it only loads once per
-process, not per connection.
+`FasterWhisperSTT` transcribes speech utterances buffered between VAD events in a worker thread (`asyncio.to_thread`). Model instances are cached per process.
 
-On CPU, `large-v3` is slow (real-time factor well above 1x on most machines —
-expect several seconds of latency per utterance). If your `~/.cache/huggingface`
-already has `mobiuslabsgmbh/faster-whisper-large-v3-turbo` downloaded, set
-`VOICE_ENGINE_WHISPER_MODEL=large-v3-turbo` for meaningfully faster CPU inference
-at a small accuracy cost. Use `VOICE_ENGINE_WHISPER_DEVICE=cuda` only if your
-`ctranslate2` build was compiled with CUDA support (`python -c "import ctranslate2;
-ctranslate2.get_cuda_device_count()"` — many aarch64 pip wheels are CPU-only).
+- **CPU Performance**: Use `VOICE_ENGINE_WHISPER_MODEL=large-v3-turbo` for faster CPU inference.
+- **GPU Acceleration**: Set `VOICE_ENGINE_WHISPER_DEVICE=cuda` if your environment supports CUDA.
+- **Noise Filtering**: Combines Silero VAD filtering with `no_speech_prob` and `avg_logprob` thresholds to prevent non-speech audio hallucinations.
 
-The energy VAD gates *when* audio reaches this provider, but it can't tell
-speech from a loud non-speech noise (a cough, a sneeze, throat-clearing, a
-chair scraping behind you) — those cross the same RMS threshold and would
-otherwise get "transcribed" into hallucinated text, which then gets treated
-as a real user utterance and gets a spoken reply. This provider guards
-against that two ways: `vad_filter=True` runs Silero VAD (bundled with
-faster-whisper) over the buffered audio first, dropping non-speech stretches
-before they reach the decoder at all; and any decoded segment is still
-dropped if Whisper's own `no_speech_prob` is above
-`VOICE_ENGINE_WHISPER_NO_SPEECH_THRESHOLD` or its `avg_logprob` is below
-`VOICE_ENGINE_WHISPER_LOGPROB_THRESHOLD` — the standard low-confidence signals
-for a hallucinated segment. If nothing survives both filters, no
-`transcript` event is emitted and no response is triggered.
-
-## Generic OpenAI-compatible LLM (vLLM, LM Studio, text-generation-webui, ...)
+## Generic OpenAI-compatible LLM (vLLM, LM Studio, etc.)
 
 ```bash
 pip install -e ".[openai_completions]"
@@ -154,26 +115,11 @@ VOICE_ENGINE_LLM_MAX_TOKENS=200
 VOICE_ENGINE_LLM_TEMPERATURE=0.7
 ```
 
-`OpenAICompletionsLLM` streams tokens from any server that speaks the legacy
-OpenAI `/v1/completions` API (`stream: true`, SSE `data: {...}` lines ending in
-`data: [DONE]`) — this is what vLLM, text-generation-webui, LM Studio, and
-llama.cpp's server all expose. It builds a plain `System:`/`User:`/`Assistant:`
-prompt from the conversation history rather than a model-specific chat
-template, so it's a reasonable default across different base/instruct models
-but not tuned for any one of them. Point `VOICE_ENGINE_LLM_URL` at your own
-inference server; there's no dependency on any specific model or vendor.
+`OpenAICompletionsLLM` streams tokens from any server supporting the OpenAI `/v1/completions` API format (vLLM, LM Studio, Ollama, llama.cpp).
 
-## Sample-rate mismatch simulator (reference client)
+## Sample-rate Simulator (Reference Client)
 
-The reference client (`static/index.html`) has a "Playback sample-rate
-simulation" dropdown. TTS audio always carries its real sample rate in the
-metadata packet that precedes each binary chunk, and the client normally
-resamples it to your speakers' native rate before playback — get this step
-wrong (as the very first version of this client did) and you get sped-up,
-pitch-shifted "chipmunk" audio instead of a mismatched-rate error, which is
-a good bug to understand if you're new to audio engineering. The dropdown lets
-you deliberately force the wrong assumed rate so you can hear that failure mode
-on demand, then switch back to "Auto" to hear the correct behavior.
+The reference browser client (`static/index.html`) includes a sample-rate selection tool to test playback resampling across different audio hardware configurations.
 
 ## Configuration
 
@@ -191,45 +137,30 @@ VOICE_ENGINE_VAD_SPEECH_THRESHOLD=0.020
 VOICE_ENGINE_VAD_SILENCE_THRESHOLD=0.015
 ```
 
-## WebSocket protocol
+## WebSocket Protocol
 
-Client starts with:
+Clients connect and initiate a session with:
 
 ```json
 {"type":"session.start","session_id":"demo","sample_rate":16000,"channels":1,"encoding":"pcm_s16le"}
 ```
 
-Then it sends binary signed 16-bit little-endian mono PCM.
+Audio frames are streamed as binary signed 16-bit little-endian mono PCM.
 
-Barge-in is automatic and server-driven, not a client message: if the VAD
-fires `speech_started` while the assistant is `THINKING`/`SPEAKING`, the
-pipeline cancels the in-flight generation itself (see `handle_vad_event` in
-`core/agent.py`). There's no separate "interrupt" trigger to wire up — just
-keep streaming mic audio continuously, including while the assistant is
-talking.
+### Interruption (Barge-in)
+Barge-in is automatic: when VAD detects user speech (`speech_started`) while the assistant is processing or speaking, the active generation pipeline is instantly cancelled.
 
-The VAD's thresholds are tunable per-connection, live, without restarting the
-server:
+### Dynamic VAD Configuration
+VAD thresholds can be adjusted dynamically per session:
 
 ```json
 {"type":"vad.config","speech_threshold":0.02,"silence_threshold":0.015,"min_speech_ms":100,"min_silence_ms":300}
 ```
 
-Any subset of the four fields may be sent; omitted fields keep their current
-value. The server replies with `vad.config.ack` (carrying the resulting full
-config) or an `error` with `code: "INVALID_VAD_CONFIG"` if the update would
-put `silence_threshold` at or above `speech_threshold`. The reference client's
-"Voice activity detection" panel drives this message from range sliders and
-shows a live mic-level meter against the current thresholds, so you can tune
-barge-in sensitivity by ear instead of guessing at `.env` values.
+The server responds with `vad.config.ack` or an `error` message.
 
-`session.ready` includes the VAD's current config (under `vad`) so a client
-can prefill its tuning UI with the server's real defaults rather than
-duplicating them.
-
-Server events include:
-
-- `session.ready` (includes current `vad` config)
+### Server Events
+- `session.ready`
 - `speech_started`
 - `speaking`
 - `speech_ended`
@@ -242,8 +173,6 @@ Server events include:
 - `generation.cancelled`
 - `vad.config.ack`
 - `error`
-
-Audio packets are accompanied by generation metadata. The client must discard audio belonging to a stale generation.
 
 ## Architecture
 
@@ -276,23 +205,13 @@ Audio packets are accompanied by generation metadata. The client must discard au
                 WebSocket          future WebRTC/SIP
 ```
 
-## Concurrency: overlapped TTS calls
+## Concurrency & Pipeline Optimization
 
-`TextChunker` splits the LLM's token stream into short phrases so TTS can
-start before the full reply is generated. Network-backed TTS providers
-(Gemini, Deepgram) go a step further with `core/concurrency.pipeline_ahead`:
-while phrase N's audio is being sent to the client, phrase N+1's API call is
-already running in the background, instead of the pipeline sitting idle
-waiting for each call to finish before starting the next. Results still come
-out in order. If a generation is cancelled mid-stream (barge-in), any
-in-flight lookahead calls are cancelled too rather than left running to burn
-API quota for audio nobody will hear. `voice_engine/core/concurrency.py` is a
-generic `AsyncIterator[In] -> AsyncIterator[Out]` helper, reusable for any
-other per-item async work a forked provider needs to overlap.
+`TextChunker` splits LLM token output into short phrases for fast initial TTS playback. For network-backed TTS providers (Gemini, Deepgram), `pipeline_ahead` pre-fetches audio for upcoming text phrases in parallel while current audio chunks stream to the client.
 
-## Production hardening
+## Security & Deployment
 
-The repository includes reference security controls and metrics, but deployment-specific authentication, TLS, proxy limits, provider credentials, persistence, and scaling policies must still be configured by the application owner.
+Production deployment requires configuring environment-specific authentication tokens, TLS termination, CORS origin allowlists, connection limits, and rate limits.
 
 ## License
 
