@@ -1,0 +1,11 @@
+services:
+  voice-engine:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      VOICE_ENGINE_STT: mock
+      VOICE_ENGINE_LLM: mock
+      VOICE_ENGINE_TTS: mock
+      VOICE_ENGINE_ALLOWED_ORIGINS: http://localhost:8000
+    restart: unless-stopped

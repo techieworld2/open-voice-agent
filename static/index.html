@@ -1,0 +1,277 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Open Voice Engine</title>
+<style>
+body{font-family:system-ui,sans-serif;max-width:900px;margin:40px auto;padding:20px}
+button{padding:12px 18px;margin:5px;cursor:pointer}
+#status{margin:18px 0;font-weight:600}
+#log{background:#111;color:#eee;padding:16px;border-radius:10px;min-height:220px;white-space:pre-wrap}
+</style>
+</head>
+<body>
+<h1>Open Voice Engine</h1>
+<p>Reference client with 16 kHz PCM capture and AudioWorklet playback.
+Interruption is automatic: speak while the assistant is talking and the
+server's VAD barges in — there's no interrupt button, tune the VAD below
+instead.</p>
+<button id="start">Start microphone</button>
+<button id="stop" disabled>Stop</button>
+<div>
+  <label for="rateSim">Playback sample-rate simulation: </label>
+  <select id="rateSim">
+    <option value="auto" selected>Auto (correct, uses real TTS rate)</option>
+    <option value="8000">Force 8,000 Hz (telephony)</option>
+    <option value="16000">Force 16,000 Hz</option>
+    <option value="22050">Force 22,050 Hz</option>
+    <option value="24000">Force 24,000 Hz (most TTS APIs)</option>
+    <option value="44100">Force 44,100 Hz (CD quality)</option>
+    <option value="48000">Force 48,000 Hz (studio)</option>
+  </select>
+  <span title="Playing audio at the wrong assumed sample rate speeds it up or slows it down and shifts pitch. Pick a value below the real TTS rate to hear it slow down and drop in pitch; pick one above to hear it speed up and rise in pitch, like a chipmunk.">ⓘ what does this do?</span>
+</div>
+<div id="rateInfo"></div>
+
+<div id="vadPanel" style="margin-top:14px;padding:12px;background:#f5f5f5;border-radius:8px">
+  <strong>Voice activity detection (barge-in sensitivity)</strong>
+  <div style="margin-top:8px">
+    <label>Speech threshold (level needed to count as speech): <span id="speechThresholdVal"></span></label><br>
+    <input type="range" id="speechThreshold" min="0.002" max="0.15" step="0.001" style="width:320px">
+    <div style="font-size:12px;color:#555">Higher = harder to trigger, ignores more background noise but misses quiet speech; lower = triggers more easily, but noise/breath sounds may falsely count as speech.</div>
+  </div>
+  <div>
+    <label>Silence threshold (level below which it's silence): <span id="silenceThresholdVal"></span></label><br>
+    <input type="range" id="silenceThreshold" min="0.001" max="0.14" step="0.001" style="width:320px">
+    <div style="font-size:12px;color:#555">Higher = counts quieter mic input as still-speaking, so trailing breath/hum can delay speech_ended; lower = more sensitive to true silence, but a soft word can look like a pause and end the turn early.</div>
+  </div>
+  <div>
+    <label>Min speech duration before triggering (ms): <span id="minSpeechVal"></span></label><br>
+    <input type="range" id="minSpeechMs" min="20" max="1000" step="20" style="width:320px">
+    <div style="font-size:12px;color:#555">Higher = fewer false triggers from clicks/coughs, but adds delay before barge-in reacts; lower = near-instant barge-in, but more prone to firing on brief noise blips.</div>
+  </div>
+  <div>
+    <label>Min silence duration before ending (ms): <span id="minSilenceVal"></span></label><br>
+    <input type="range" id="minSilenceMs" min="60" max="2000" step="20" style="width:320px">
+    <div style="font-size:12px;color:#555">Higher = tolerates longer pauses mid-sentence without cutting you off, but adds latency before the assistant responds; lower = snappier turn-taking, but normal pauses may get treated as the end of your turn.</div>
+  </div>
+  <div style="margin-top:10px;position:relative;height:18px;background:#ddd;border-radius:4px;overflow:hidden">
+    <div id="levelFill" style="position:absolute;left:0;top:0;height:100%;width:0%;background:#4a90d9"></div>
+    <div id="silenceMark" style="position:absolute;top:0;height:100%;width:2px;background:#777"></div>
+    <div id="speechMark" style="position:absolute;top:0;height:100%;width:2px;background:#222"></div>
+  </div>
+  <div style="font-size:12px;color:#555">Live mic level vs. thresholds (light mark = silence threshold, dark mark = speech threshold).</div>
+</div>
+
+<div id="status">Disconnected</div>
+<pre id="log"></pre>
+
+<script>
+let ws, stream, audioContext, source, processor, workletNode;
+let currentGeneration=null;
+let currentPlaybackRate=24000;
+let rateSimOverride=null;
+const logEl=document.getElementById("log");
+const status=document.getElementById("status");
+const rateInfoEl=document.getElementById("rateInfo");
+const rateSimEl=document.getElementById("rateSim");
+const write=x=>{logEl.textContent+=x+"\n";logEl.scrollTop=logEl.scrollHeight};
+
+function updateRateInfo(){
+  const native=audioContext?audioContext.sampleRate:"?";
+  const used=rateSimOverride!==null?rateSimOverride:currentPlaybackRate;
+  const label=rateSimOverride!==null?" (simulated, real is "+currentPlaybackRate+" Hz)":"";
+  rateInfoEl.textContent=`Speaker native rate: ${native} Hz — treating incoming audio as: ${used} Hz${label}`;
+}
+
+rateSimEl.onchange=()=>{
+  rateSimOverride=rateSimEl.value==="auto"?null:parseInt(rateSimEl.value,10);
+  updateRateInfo();
+};
+
+const vadEls={
+  speechThreshold:document.getElementById("speechThreshold"),
+  silenceThreshold:document.getElementById("silenceThreshold"),
+  minSpeechMs:document.getElementById("minSpeechMs"),
+  minSilenceMs:document.getElementById("minSilenceMs"),
+};
+const vadVals={
+  speechThreshold:document.getElementById("speechThresholdVal"),
+  silenceThreshold:document.getElementById("silenceThresholdVal"),
+  minSpeechMs:document.getElementById("minSpeechVal"),
+  minSilenceMs:document.getElementById("minSilenceVal"),
+};
+const levelFillEl=document.getElementById("levelFill");
+const speechMarkEl=document.getElementById("speechMark");
+const silenceMarkEl=document.getElementById("silenceMark");
+
+function levelScale(){
+  return Math.max(parseFloat(vadEls.speechThreshold.value)*1.6,0.05);
+}
+
+function refreshVadDisplay(){
+  vadVals.speechThreshold.textContent=parseFloat(vadEls.speechThreshold.value).toFixed(3);
+  vadVals.silenceThreshold.textContent=parseFloat(vadEls.silenceThreshold.value).toFixed(3);
+  vadVals.minSpeechMs.textContent=vadEls.minSpeechMs.value;
+  vadVals.minSilenceMs.textContent=vadEls.minSilenceMs.value;
+  const scale=levelScale();
+  speechMarkEl.style.left=Math.min(100,parseFloat(vadEls.speechThreshold.value)/scale*100)+"%";
+  silenceMarkEl.style.left=Math.min(100,parseFloat(vadEls.silenceThreshold.value)/scale*100)+"%";
+}
+
+function setVadFromServer(vad){
+  vadEls.speechThreshold.value=vad.speech_threshold;
+  vadEls.silenceThreshold.value=vad.silence_threshold;
+  vadEls.minSpeechMs.value=vad.min_speech_ms;
+  vadEls.minSilenceMs.value=vad.min_silence_ms;
+  refreshVadDisplay();
+}
+
+function sendVadConfig(){
+  if(!ws||ws.readyState!==WebSocket.OPEN)return;
+  ws.send(JSON.stringify({
+    type:"vad.config",
+    speech_threshold:parseFloat(vadEls.speechThreshold.value),
+    silence_threshold:parseFloat(vadEls.silenceThreshold.value),
+    min_speech_ms:parseInt(vadEls.minSpeechMs.value,10),
+    min_silence_ms:parseInt(vadEls.minSilenceMs.value,10),
+  }));
+}
+
+Object.values(vadEls).forEach(el=>{
+  el.oninput=refreshVadDisplay;
+  el.onchange=sendVadConfig;
+});
+refreshVadDisplay();
+
+function clearPlayback(){
+  if(workletNode) workletNode.port.postMessage({type:"clear"});
+  currentGeneration=null;
+}
+
+function workletCode(){
+  return `
+  class PCMPlayer extends AudioWorkletProcessor {
+    constructor(){super();this.queue=[];this.offset=0;this.generation=null;
+      this.port.onmessage=e=>{
+        if(e.data.type==="clear"){this.queue=[];this.offset=0;this.generation=null;}
+        if(e.data.type==="generation")this.generation=e.data.id;
+        if(e.data.type==="audio" && e.data.generation===this.generation){
+          this.queue.push(new Float32Array(e.data.samples));
+        }
+      };
+    }
+    process(_,outputs){
+      const out=outputs[0][0];
+      out.fill(0);
+      let i=0;
+      while(i<out.length && this.queue.length){
+        const a=this.queue[0], n=Math.min(out.length-i,a.length-this.offset);
+        out.set(a.subarray(this.offset,this.offset+n),i);
+        i+=n; this.offset+=n;
+        if(this.offset>=a.length){this.queue.shift();this.offset=0;}
+      }
+      return true;
+    }
+  }
+  registerProcessor("pcm-player",PCMPlayer);
+  `;
+}
+
+function pcmToFloat32(bytes){
+  const view=new DataView(bytes.buffer,bytes.byteOffset,bytes.byteLength);
+  const out=new Float32Array(bytes.byteLength/2);
+  for(let i=0;i<out.length;i++)out[i]=view.getInt16(i*2,true)/32768;
+  return out;
+}
+
+function downsample(input,inRate,outRate){
+  if(inRate===outRate)return input;
+  const ratio=inRate/outRate, out=new Float32Array(Math.round(input.length/ratio));
+  for(let i=0;i<out.length;i++){
+    const p=i*ratio,l=Math.floor(p),r=Math.min(l+1,input.length-1),f=p-l;
+    out[i]=input[l]*(1-f)+input[r]*f;
+  }
+  return out;
+}
+
+function floatToPCM16(x){
+  const b=new ArrayBuffer(x.length*2),v=new DataView(b);
+  for(let i=0;i<x.length;i++){const s=Math.max(-1,Math.min(1,x[i]));v.setInt16(i*2,s<0?s*32768:s*32767,true);}
+  return b;
+}
+
+async function start(){
+  try{
+    await startInner();
+  }catch(err){
+    write("ERROR: "+(err&&err.message?err.message:err));
+    status.textContent="Error: "+(err&&err.message?err.message:err);
+    document.getElementById("start").disabled=false;
+    document.getElementById("stop").disabled=true;
+  }
+}
+
+async function startInner(){
+  audioContext=new AudioContext();
+  updateRateInfo();
+  const blob=new Blob([workletCode()],{type:"application/javascript"});
+  await audioContext.audioWorklet.addModule(URL.createObjectURL(blob));
+  workletNode=new AudioWorkletNode(audioContext,"pcm-player");
+  workletNode.connect(audioContext.destination);
+
+  stream=await navigator.mediaDevices.getUserMedia({audio:{channelCount:1}});
+  ws=new WebSocket(`ws://${location.host}/ws/voice`);
+  ws.binaryType="arraybuffer";
+  ws.onopen=()=>{status.textContent="Connected";ws.send(JSON.stringify({
+    type:"session.start",session_id:crypto.randomUUID(),sample_rate:16000,channels:1,encoding:"pcm_s16le"
+  }))};
+  ws.onerror=()=>write("ERROR: websocket error");
+  ws.onclose=e=>{status.textContent="Disconnected";write(`socket closed (code ${e.code})`);};
+
+  ws.onmessage=async e=>{
+    if(typeof e.data==="string"){
+      const m=JSON.parse(e.data); write(JSON.stringify(m));
+      if(m.type==="CLEAR_BUFFER")clearPlayback();
+      if(m.type==="audio.start"){currentGeneration=m.generation_id;workletNode.port.postMessage({type:"generation",id:currentGeneration});}
+      if(m.type==="audio"&&m.sample_rate){currentPlaybackRate=m.sample_rate;updateRateInfo();}
+      if((m.type==="session.ready"||m.type==="vad.config.ack")&&m.vad)setVadFromServer(m.vad);
+      if(m.type==="error"&&m.code==="INVALID_VAD_CONFIG")write("VAD config rejected: "+m.message);
+    }else{
+      // Resample from the TTS provider's real rate to the speakers' native rate.
+      const assumedRate=rateSimOverride!==null?rateSimOverride:currentPlaybackRate;
+      const f=downsample(pcmToFloat32(new Uint8Array(e.data)),assumedRate,audioContext.sampleRate);
+      workletNode.port.postMessage({type:"audio",generation:currentGeneration,samples:Array.from(f)});
+    }
+  };
+
+  const s=audioContext.createMediaStreamSource(stream);
+  processor=audioContext.createScriptProcessor(1024,1,1);
+  processor.onaudioprocess=e=>{
+    const down=downsample(e.inputBuffer.getChannelData(0),audioContext.sampleRate,16000);
+    let sumSq=0; for(let i=0;i<down.length;i++)sumSq+=down[i]*down[i];
+    const level=Math.sqrt(sumSq/down.length);
+    levelFillEl.style.width=Math.min(100,level/levelScale()*100)+"%";
+    if(ws.readyState!==WebSocket.OPEN)return;
+    ws.send(floatToPCM16(down));
+  };
+  s.connect(processor);processor.connect(audioContext.destination);
+  source=s;
+  document.getElementById("start").disabled=true;
+  document.getElementById("stop").disabled=false;
+}
+
+function stop(){
+  processor?.disconnect();source?.disconnect();stream?.getTracks().forEach(t=>t.stop());
+  clearPlayback(); if(ws?.readyState===WebSocket.OPEN)ws.send(JSON.stringify({type:"session.end"}));
+  ws?.close(); status.textContent="Disconnected";
+  document.getElementById("start").disabled=false;
+  document.getElementById("stop").disabled=true;
+}
+
+document.getElementById("start").onclick=start;
+document.getElementById("stop").onclick=stop;
+</script>
+</body>
+</html>
