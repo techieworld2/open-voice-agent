@@ -3,275 +3,126 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Open Voice Engine</title>
-<style>
-body{font-family:system-ui,sans-serif;max-width:900px;margin:40px auto;padding:20px}
-button{padding:12px 18px;margin:5px;cursor:pointer}
-#status{margin:18px 0;font-weight:600}
-#log{background:#111;color:#eee;padding:16px;border-radius:10px;min-height:220px;white-space:pre-wrap}
-</style>
+<meta name="color-scheme" content="light">
+<title>Voice Console · Open Voice Engine</title>
+<link rel="stylesheet" href="/static/console.css">
 </head>
 <body>
-<h1>Open Voice Engine</h1>
-<p>Reference client with 16 kHz PCM capture and AudioWorklet playback.
-Interruption is automatic: speak while the assistant is talking and the
-server's VAD barges in — there's no interrupt button, tune the VAD below
-instead.</p>
-<button id="start">Start microphone</button>
-<button id="stop" disabled>Stop</button>
-<div>
-  <label for="rateSim">Playback sample-rate simulation: </label>
-  <select id="rateSim">
-    <option value="auto" selected>Auto (correct, uses real TTS rate)</option>
-    <option value="8000">Force 8,000 Hz (telephony)</option>
-    <option value="16000">Force 16,000 Hz</option>
-    <option value="22050">Force 22,050 Hz</option>
-    <option value="24000">Force 24,000 Hz (most TTS APIs)</option>
-    <option value="44100">Force 44,100 Hz (CD quality)</option>
-    <option value="48000">Force 48,000 Hz (studio)</option>
-  </select>
-  <span title="Playing audio at the wrong assumed sample rate speeds it up or slows it down and shifts pitch. Pick a value below the real TTS rate to hear it slow down and drop in pitch; pick one above to hear it speed up and rise in pitch, like a chipmunk.">ⓘ what does this do?</span>
-</div>
-<div id="rateInfo"></div>
-
-<div id="vadPanel" style="margin-top:14px;padding:12px;background:#f5f5f5;border-radius:8px">
-  <strong>Voice activity detection (barge-in sensitivity)</strong>
-  <div style="margin-top:8px">
-    <label>Speech threshold (level needed to count as speech): <span id="speechThresholdVal"></span></label><br>
-    <input type="range" id="speechThreshold" min="0.002" max="0.15" step="0.001" style="width:320px">
-    <div style="font-size:12px;color:#555">Higher = harder to trigger, ignores more background noise but misses quiet speech; lower = triggers more easily, but noise/breath sounds may falsely count as speech.</div>
+<header class="topbar">
+  <a class="brand" href="/" aria-label="Open Voice Engine home"><span class="brand-mark">ov</span><span>Open Voice Engine</span></a>
+  <span class="topbar-note">AUDIO LAB <span class="divider">/</span> WEBSOCKET</span>
+  <button class="button subtle compact" id="helpTour">Help &amp; tour</button><a class="utility-link" href="/health" target="_blank" rel="noopener">Server health <span aria-hidden="true">↗</span></a>
+</header>
+<main class="workspace">
+  <div class="page-heading">
+    <div><span class="eyebrow">DEVELOPMENT CONSOLE</span><h1>Voice console</h1><p>Live audio, turn detection, and playback inspection.</p></div>
+    <div class="session-actions"><span class="connection-state" id="connection"><i></i><span id="connectionText">Disconnected</span></span><a class="button settings-link" href="#audio-settings">Audio settings</a><button class="button primary" id="start">Start microphone</button><button class="button" id="stop" disabled>Stop session</button></div>
   </div>
-  <div>
-    <label>Silence threshold (level below which it's silence): <span id="silenceThresholdVal"></span></label><br>
-    <input type="range" id="silenceThreshold" min="0.001" max="0.14" step="0.001" style="width:320px">
-    <div style="font-size:12px;color:#555">Higher = counts quieter mic input as still-speaking, so trailing breath/hum can delay speech_ended; lower = more sensitive to true silence, but a soft word can look like a pause and end the turn early.</div>
+  <div class="notice" id="notice" role="alert" hidden></div>
+  <section class="metrics" aria-label="Live telemetry">
+    <div class="metric"><span>Transport profile</span><strong id="profile">16kHz Wideband WS</strong><small id="profileDetail">PCM · mono · 20ms frames</small></div>
+    <div class="metric"><span>Semantic end of turn</span><strong id="eot">300ms Complete</strong><small>Silence window after your last word</small></div>
+    <div class="metric"><span>Time to first audio</span><strong id="ttfa">— <em>ms</em></strong><small>End of speech → first audio packet</small></div>
+    <div class="metric"><span>Barge-in cancellation</span><strong id="cancel">— <em>ms</em></strong><small>Interruption gate → stream halt</small></div>
+  </section>
+  <div class="lab-layout">
+    <aside class="settings" id="audio-settings" aria-label="Session and audio settings">
+      <details class="settings-group" id="sessionSettings">
+        <summary><span><b>01</b> Session</span><span class="chevron">⌄</span></summary>
+        <div class="settings-body">
+          <label class="field-label" for="mode">Simulation profile</label>
+          <select id="mode"><option value="wideband">Wideband · 16kHz WebSocket</option><option value="telephony">Phone call · 8kHz WebSocket</option></select>
+          <label class="field-label" for="responseMode">Session behavior</label><select id="responseMode"><option value="conversation">Conversation · STT → LLM → TTS</option><option value="transcription">Transcription only · no LLM or TTS calls</option></select><p class="help" id="responseHelp">Transcripts appear independently of reply generation, including when a provider fails.</p>
+          <p class="help" id="modeHelp">Full-spectrum audio. 320 samples in each 20ms packet.</p>
+          <label class="field-label" for="codec">Wire encoding</label>
+          <select id="codec" disabled><option value="pcm_s16le">Linear PCM · signed 16-bit</option><option value="mulaw">G.711 μ-law · 8-bit</option></select>
+          <label class="field-label" for="inputSource">Audio source</label>
+          <select id="inputSource"><option value="microphone">Live microphone</option><option value="file">Audio file · repeatable test</option></select>
+          <div id="fileControls" hidden><label class="file-picker" for="audioFile">Choose an audio file<input id="audioFile" type="file" accept="audio/*"></label><p class="help" id="fileInfo">WAV, MP3, or another format your browser can decode. Up to 25 seconds / 10MB.</p><button class="button full" id="streamFile" disabled>Stream file as caller audio</button></div>
+          <label class="field-label" for="token">Session token <span class="optional">optional</span></label><input id="token" type="password" autocomplete="off" placeholder="Only if configured on the server">
+          <p class="help">Your model API keys stay in the server’s .env file.</p>
+        </div>
+      </details>
+      <details class="settings-group" id="microphoneSettings">
+        <summary><span><b>02</b> Microphone &amp; processing</span><span class="chevron">⌄</span></summary>
+        <div class="settings-body">
+          <label class="field-label" for="capturePreset">Capture preset</label><select id="capturePreset"><option value="headset">Desktop / headset</option><option value="mobile">Mobile / speakerphone</option><option value="raw">Raw microphone / measurement</option><option value="custom">Custom processing</option></select>
+          <p class="help" id="captureHelp">Echo cancellation and noise suppression, with automatic gain disabled for a consistent input level.</p>
+          <label class="field-label" for="micDevice">Microphone device</label><select id="micDevice"><option value="">System default microphone</option></select>
+          <div class="switch-row"><label for="echoCancellation">Echo cancellation<span>Reduces the agent’s speaker audio entering the microphone.</span></label><input id="echoCancellation" type="checkbox" role="switch" checked></div>
+          <div class="switch-row"><label for="noiseSuppression">Noise suppression<span>Reduces steady background noise. It can alter quiet speech.</span></label><input id="noiseSuppression" type="checkbox" role="switch" checked></div>
+          <div class="switch-row"><label for="autoGainControl">Automatic gain<span>Browser adjusts loudness. Useful on mobile; affects RMS tuning.</span></label><input id="autoGainControl" type="checkbox" role="switch"></div>
+          <div class="range-heading"><label for="inputGain">Input gain</label><output id="inputGainValue">1.00×</output></div><input id="inputGain" type="range" min="0.25" max="3" step="0.05" value="1"><p class="help">Boosts or reduces audio before VAD. Too much gain also boosts noise and can clip speech.</p>
+          <p class="device-info" id="deviceInfo">Actual device settings appear after microphone permission.</p>
+          <p class="control-state" id="captureState" role="status">Processing switches apply live during a microphone session.</p>
+          <button class="button compact full" id="retryCapture" hidden>Retry microphone</button>
+        </div>
+      </details>
+      <details class="settings-group" id="vadSettings">
+        <summary><span><b>03</b> Voice activity &amp; turns</span><span class="chevron">⌄</span></summary>
+        <div class="settings-body">
+          <label class="field-label" for="vadPreset">VAD environment</label><select id="vadPreset"><option value="server">Server defaults</option><option value="quiet">Quiet room / close microphone</option><option value="balanced">Balanced desktop</option><option value="mobile">Mobile / noisy room</option><option value="phone">Phone / PSTN acoustics</option><option value="custom">Custom tuning</option></select>
+          <p class="help" id="vadHelp">Starts with the selected transport’s server configuration.</p>
+          <div class="range-heading"><label for="speech">Speech threshold</label><output id="speechValue">0.020</output></div><input id="speech" type="range" min="0.002" max="0.15" step="0.001" value="0.020"><p class="help">Higher values ignore more background noise but can miss quiet speech. Lower values pick up softer voices and more noise.</p>
+          <div class="range-heading"><label for="silence">Silence threshold</label><output id="silenceValue">0.015</output></div><input id="silence" type="range" min="0.001" max="0.14" step="0.001" value="0.015"><p class="help">Audio below this level counts as silence. Higher values end pauses sooner; lower values can keep breath or hum inside a turn.</p>
+          <div class="range-heading"><label for="minSpeech">Min speech duration</label><output id="minSpeechValue">100ms</output></div><input id="minSpeech" type="range" min="20" max="1000" step="20" value="100"><p class="help">Speech must persist this long to start an utterance. Higher values reject clicks and short coughs; lower values react sooner.</p>
+          <div class="range-heading"><label for="minSilence">Min silence duration</label><output id="minSilenceValue">300ms</output></div><input id="minSilence" type="range" min="100" max="1500" step="50" value="300"><p class="help">The base pause before a complete turn ends. Higher values allow thinking pauses but delay replies. Lower values can cut off a sentence.</p>
+          <div class="switch-row"><label for="semanticEot">Semantic end of turn<span>Extends silence after unfinished phrases such as “and” or “because.”</span></label><input id="semanticEot" type="checkbox" role="switch" checked></div>
+          <div class="range-heading"><label for="trailingSilence">Trailing-clause silence</label><output id="trailingSilenceValue">950ms</output></div><input id="trailingSilence" type="range" min="300" max="2500" step="50" value="950"><p class="help">Extra thinking time for incomplete clauses. The effective window never falls below your base silence duration.</p>
+          <div class="range-heading"><label for="bargeSpeech">Barge-in speech duration</label><output id="bargeSpeechValue">320ms</output></div><input id="bargeSpeech" type="range" min="320" max="1200" step="20" value="320"><p class="help">Minimum voiced audio before interruption can be confirmed. Higher values resist accidental interruptions but react more slowly.</p>
+          <div class="switch-row"><label for="backchannels">Ignore passive backchannels<span>“Yeah,” “okay,” “uh-huh,” “yep,” “right,” and “mhm” alone keep the agent speaking.</span></label><input id="backchannels" type="checkbox" role="switch" checked></div>
+          <button class="button subtle full" id="resetVad">Reset VAD to server defaults</button><p class="help">Tune while connected. The speech/silence threshold pair stays valid automatically. Watch the live VAD badge, or choose VAD speech gate under Listen &amp; tune live to hear the result.</p><p id="vadState" class="control-state" role="status">Connect to apply settings live.</p>
+        </div>
+      </details>
+      <details class="settings-group" id="playbackSettings">
+        <summary><span><b>04</b> Playback</span><span class="chevron">⌄</span></summary>
+        <div class="settings-body">
+          <label class="field-label" for="playbackBuffer">Playback prebuffer</label><select id="playbackBuffer"><option value="0">Immediate · 0ms</option><option value="40" selected>Low latency · 40ms</option><option value="100">Stable playback · 100ms</option><option value="200">Mobile / uneven connection · 200ms</option></select><p class="help">Collects audio before playback starts. More buffer reduces gaps, with an equal delay before you hear the reply.</p>
+          <label class="field-label" for="rateSim">Playback sample-rate assumption</label><select id="rateSim"><option value="auto">Auto · correct negotiated rate</option><option value="8000">Force 8,000Hz</option><option value="16000">Force 16,000Hz</option><option value="22050">Force 22,050Hz</option><option value="24000">Force 24,000Hz</option><option value="44100">Force 44,100Hz</option><option value="48000">Force 48,000Hz</option></select><p class="help">An educational playback experiment: a wrong assumed rate changes pitch and speed. It does not change the WebSocket profile.</p>
+          <div class="range-heading"><label for="volume">Speaker volume</label><output id="volumeValue">80%</output></div><input id="volume" type="range" min="0" max="100" step="1" value="80">
+          <div class="button-pair"><button class="button" id="pausePlayback" disabled>Pause agent</button><button class="button" id="flushPlayback" disabled>Flush playback</button></div><p class="help">Pause holds queued agent audio. Flush cancels generation and synchronizes history to the rendered prefix.</p>
+          <div class="playback-readout"><span>Queued <b id="queuedAudio">0ms</b></span><span>Buffer gaps <b id="underruns">0</b></span></div>
+        </div>
+      </details>
+    </aside>
+    <div class="main-column">
+      <section class="panel conversation-panel">
+        <div class="panel-heading"><div><h2>Live conversation</h2><span class="section-note" id="providerInfo">Connect to inspect your STT, LLM, and TTS providers.</span></div><button class="button subtle compact" id="clearTranscript">Clear view</button></div>
+        <div class="pipeline" aria-label="Pipeline progress">
+          <div class="stage" id="stage-stt"><span class="stage-label">01 / RECOGNIZE</span><strong id="sttProvider">STT</strong><span id="sttState" class="stage-state">Waiting for session</span></div>
+          <span class="stage-arrow" aria-hidden="true">→</span>
+          <div class="stage" id="stage-llm"><span class="stage-label">02 / RESPOND</span><strong id="llmProvider">LLM</strong><span id="llmState" class="stage-state">Waiting for transcript</span></div>
+          <span class="stage-arrow" aria-hidden="true">→</span>
+          <div class="stage" id="stage-tts"><span class="stage-label">03 / SPEAK</span><strong id="ttsProvider">TTS</strong><span id="ttsState" class="stage-state">Waiting for reply</span></div>
+        </div>
+        <div class="activity-strip"><span class="activity-dot" id="activityDot"></span><span id="status" role="status" aria-live="polite">Start a session to listen to the pipeline.</span></div>
+        <div class="recognition-readout" id="recognitionReadout"><div><strong>Latest transcription</strong><span id="recognitionState">Independent of LLM / TTS</span></div><p id="latestTranscript" role="status" aria-live="polite">Your recognized speech will appear here, even if reply generation fails.</p></div>
+        <div id="transcript" class="transcript" role="log" aria-live="polite"><div id="transcriptEmpty" class="empty-state"><svg viewBox="0 0 48 48" fill="none" aria-hidden="true"><path d="M8 16v16m8-24v32m8-28v24m8-18v12m8-10v8" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg><h3>Your conversation will appear here</h3><p>Speak into the microphone, stream a recorded clip,<br>or send a text turn to test the response path.</p></div></div>
+        <form id="textForm" class="composer"><input id="text" aria-label="Text turn" placeholder="Send a text turn to test LLM → TTS"><button class="button primary" id="sendText" disabled>Send turn <span aria-hidden="true">↗</span></button></form>
+      </section>
+      <section class="panel signal-panel">
+        <div class="panel-heading"><div><h2>Input signal</h2><span class="section-note" id="rateInfo">Device rate → negotiated transport rate</span></div><button class="button compact" id="pauseInput" disabled>Pause input</button></div>
+        <div class="signal-legend"><span><i class="signal-key"></i> RMS level</span><span><i class="threshold-key"></i> Speech threshold</span><span id="liveVad" data-state="idle" role="status">VAD · offline</span><span class="signal-value" id="rmsValue">0.000 RMS</span></div>
+        <p class="applied-vad" id="appliedVad">Server settings appear after connection.</p>
+        <canvas id="waveform" height="84" aria-label="Live microphone RMS and VAD speech threshold"></canvas>
+        <div class="monitor-controls" id="monitorControls"><div><strong>Listen &amp; tune live</strong><p class="help" id="monitorInfo">Processed input is the audio STT receives. VAD gate preview mutes non-speech so you can hear detection changes; it does not filter noise. Use headphones.</p><label class="monitor-source-label" for="monitorSource">Monitor source</label><select id="monitorSource"><option value="input">Processed input · before VAD</option><option value="vad">VAD speech gate · hear detection</option></select></div><div class="monitor-actions"><button class="button compact" id="monitorInput" aria-pressed="false" disabled>Listen to my input</button><label for="monitorVolume">Monitor volume <output id="monitorVolumeValue">30%</output></label><input id="monitorVolume" type="range" min="0" max="100" value="30" aria-label="Input monitor volume"></div></div>
+        <div class="capture-footer"><div><strong>Capture &amp; review</strong><p class="help" id="clipInfo">Save a five-second snapshot. Use Listen to my input above to compare processing live.</p></div><div class="button-pair"><button class="button compact" id="recordClip" disabled>Capture 5 seconds</button><button class="button compact" id="playClip" disabled>Play capture</button></div></div>
+      </section>
+      <section class="panel">
+        <div class="panel-heading"><div><h2>Concurrent call benchmark</h2><span class="section-note">Compare transport timing across 30 headless callers.</span></div><span class="tag">P50 / P95 / P99</span></div>
+        <div class="benchmark-body"><button class="button" id="benchmark">Run 30-Call Concurrency Benchmark</button><p id="benchmarkStatus" class="help" role="status" aria-live="polite">Uses the selected transport and server providers. Synthetic tones test mock STT and VAD, not real recognition accuracy.</p>
+        <div class="table-scroll"><table><thead><tr><th>Metric <span>(ms)</span></th><th>P50</th><th>P95</th><th>P99</th><th>Max</th></tr></thead><tbody id="results"><tr class="table-empty"><td colspan="5">Run a benchmark to populate the latency distribution.</td></tr></tbody></table></div></div>
+      </section>
+      <section class="panel events-panel">
+        <div class="panel-heading"><div><h2>Protocol events</h2><span class="section-note">Session controls, recognition, generation, and interruption.</span></div><div class="event-actions"><label class="check-label"><input id="autoScroll" type="checkbox" checked> Follow</label><button class="button subtle compact" id="copyLog">Copy</button><button class="button subtle compact" id="clearLog">Clear</button></div></div>
+        <pre id="log" tabindex="0" aria-label="WebSocket protocol log"><span class="log-empty">Awaiting session events.</span></pre>
+      </section>
+    </div>
   </div>
-  <div>
-    <label>Min speech duration before triggering (ms): <span id="minSpeechVal"></span></label><br>
-    <input type="range" id="minSpeechMs" min="20" max="1000" step="20" style="width:320px">
-    <div style="font-size:12px;color:#555">Higher = fewer false triggers from clicks/coughs, but adds delay before barge-in reacts; lower = near-instant barge-in, but more prone to firing on brief noise blips.</div>
-  </div>
-  <div>
-    <label>Min silence duration before ending (ms): <span id="minSilenceVal"></span></label><br>
-    <input type="range" id="minSilenceMs" min="60" max="2000" step="20" style="width:320px">
-    <div style="font-size:12px;color:#555">Higher = tolerates longer pauses mid-sentence without cutting you off, but adds latency before the assistant responds; lower = snappier turn-taking, but normal pauses may get treated as the end of your turn.</div>
-  </div>
-  <div style="margin-top:10px;position:relative;height:18px;background:#ddd;border-radius:4px;overflow:hidden">
-    <div id="levelFill" style="position:absolute;left:0;top:0;height:100%;width:0%;background:#4a90d9"></div>
-    <div id="silenceMark" style="position:absolute;top:0;height:100%;width:2px;background:#777"></div>
-    <div id="speechMark" style="position:absolute;top:0;height:100%;width:2px;background:#222"></div>
-  </div>
-  <div style="font-size:12px;color:#555">Live mic level vs. thresholds (light mark = silence threshold, dark mark = speech threshold).</div>
-</div>
-
-<div id="status">Disconnected</div>
-<pre id="log"></pre>
-
-<script>
-let ws, stream, audioContext, source, processor, workletNode;
-let currentGeneration=null;
-let currentPlaybackRate=24000;
-let rateSimOverride=null;
-const logEl=document.getElementById("log");
-const status=document.getElementById("status");
-const rateInfoEl=document.getElementById("rateInfo");
-const rateSimEl=document.getElementById("rateSim");
-const write=x=>{logEl.textContent+=x+"\n";logEl.scrollTop=logEl.scrollHeight};
-
-function updateRateInfo(){
-  const native=audioContext?audioContext.sampleRate:"?";
-  const used=rateSimOverride!==null?rateSimOverride:currentPlaybackRate;
-  const label=rateSimOverride!==null?" (simulated, real is "+currentPlaybackRate+" Hz)":"";
-  rateInfoEl.textContent=`Speaker native rate: ${native} Hz — treating incoming audio as: ${used} Hz${label}`;
-}
-
-rateSimEl.onchange=()=>{
-  rateSimOverride=rateSimEl.value==="auto"?null:parseInt(rateSimEl.value,10);
-  updateRateInfo();
-};
-
-const vadEls={
-  speechThreshold:document.getElementById("speechThreshold"),
-  silenceThreshold:document.getElementById("silenceThreshold"),
-  minSpeechMs:document.getElementById("minSpeechMs"),
-  minSilenceMs:document.getElementById("minSilenceMs"),
-};
-const vadVals={
-  speechThreshold:document.getElementById("speechThresholdVal"),
-  silenceThreshold:document.getElementById("silenceThresholdVal"),
-  minSpeechMs:document.getElementById("minSpeechVal"),
-  minSilenceMs:document.getElementById("minSilenceVal"),
-};
-const levelFillEl=document.getElementById("levelFill");
-const speechMarkEl=document.getElementById("speechMark");
-const silenceMarkEl=document.getElementById("silenceMark");
-
-function levelScale(){
-  return Math.max(parseFloat(vadEls.speechThreshold.value)*1.6,0.05);
-}
-
-function refreshVadDisplay(){
-  vadVals.speechThreshold.textContent=parseFloat(vadEls.speechThreshold.value).toFixed(3);
-  vadVals.silenceThreshold.textContent=parseFloat(vadEls.silenceThreshold.value).toFixed(3);
-  vadVals.minSpeechMs.textContent=vadEls.minSpeechMs.value;
-  vadVals.minSilenceMs.textContent=vadEls.minSilenceMs.value;
-  const scale=levelScale();
-  speechMarkEl.style.left=Math.min(100,parseFloat(vadEls.speechThreshold.value)/scale*100)+"%";
-  silenceMarkEl.style.left=Math.min(100,parseFloat(vadEls.silenceThreshold.value)/scale*100)+"%";
-}
-
-function setVadFromServer(vad){
-  vadEls.speechThreshold.value=vad.speech_threshold;
-  vadEls.silenceThreshold.value=vad.silence_threshold;
-  vadEls.minSpeechMs.value=vad.min_speech_ms;
-  vadEls.minSilenceMs.value=vad.min_silence_ms;
-  refreshVadDisplay();
-}
-
-function sendVadConfig(){
-  if(!ws||ws.readyState!==WebSocket.OPEN)return;
-  ws.send(JSON.stringify({
-    type:"vad.config",
-    speech_threshold:parseFloat(vadEls.speechThreshold.value),
-    silence_threshold:parseFloat(vadEls.silenceThreshold.value),
-    min_speech_ms:parseInt(vadEls.minSpeechMs.value,10),
-    min_silence_ms:parseInt(vadEls.minSilenceMs.value,10),
-  }));
-}
-
-Object.values(vadEls).forEach(el=>{
-  el.oninput=refreshVadDisplay;
-  el.onchange=sendVadConfig;
-});
-refreshVadDisplay();
-
-function clearPlayback(){
-  if(workletNode) workletNode.port.postMessage({type:"clear"});
-  currentGeneration=null;
-}
-
-function workletCode(){
-  return `
-  class PCMPlayer extends AudioWorkletProcessor {
-    constructor(){super();this.queue=[];this.offset=0;this.generation=null;
-      this.port.onmessage=e=>{
-        if(e.data.type==="clear"){this.queue=[];this.offset=0;this.generation=null;}
-        if(e.data.type==="generation")this.generation=e.data.id;
-        if(e.data.type==="audio" && e.data.generation===this.generation){
-          this.queue.push(new Float32Array(e.data.samples));
-        }
-      };
-    }
-    process(_,outputs){
-      const out=outputs[0][0];
-      out.fill(0);
-      let i=0;
-      while(i<out.length && this.queue.length){
-        const a=this.queue[0], n=Math.min(out.length-i,a.length-this.offset);
-        out.set(a.subarray(this.offset,this.offset+n),i);
-        i+=n; this.offset+=n;
-        if(this.offset>=a.length){this.queue.shift();this.offset=0;}
-      }
-      return true;
-    }
-  }
-  registerProcessor("pcm-player",PCMPlayer);
-  `;
-}
-
-function pcmToFloat32(bytes){
-  const view=new DataView(bytes.buffer,bytes.byteOffset,bytes.byteLength);
-  const out=new Float32Array(bytes.byteLength/2);
-  for(let i=0;i<out.length;i++)out[i]=view.getInt16(i*2,true)/32768;
-  return out;
-}
-
-function downsample(input,inRate,outRate){
-  if(inRate===outRate)return input;
-  const ratio=inRate/outRate, out=new Float32Array(Math.round(input.length/ratio));
-  for(let i=0;i<out.length;i++){
-    const p=i*ratio,l=Math.floor(p),r=Math.min(l+1,input.length-1),f=p-l;
-    out[i]=input[l]*(1-f)+input[r]*f;
-  }
-  return out;
-}
-
-function floatToPCM16(x){
-  const b=new ArrayBuffer(x.length*2),v=new DataView(b);
-  for(let i=0;i<x.length;i++){const s=Math.max(-1,Math.min(1,x[i]));v.setInt16(i*2,s<0?s*32768:s*32767,true);}
-  return b;
-}
-
-async function start(){
-  try{
-    await startInner();
-  }catch(err){
-    write("ERROR: "+(err&&err.message?err.message:err));
-    status.textContent="Error: "+(err&&err.message?err.message:err);
-    document.getElementById("start").disabled=false;
-    document.getElementById("stop").disabled=true;
-  }
-}
-
-async function startInner(){
-  audioContext=new AudioContext();
-  updateRateInfo();
-  const blob=new Blob([workletCode()],{type:"application/javascript"});
-  await audioContext.audioWorklet.addModule(URL.createObjectURL(blob));
-  workletNode=new AudioWorkletNode(audioContext,"pcm-player");
-  workletNode.connect(audioContext.destination);
-
-  stream=await navigator.mediaDevices.getUserMedia({audio:{channelCount:1}});
-  ws=new WebSocket(`ws://${location.host}/ws/voice`);
-  ws.binaryType="arraybuffer";
-  ws.onopen=()=>{status.textContent="Connected";ws.send(JSON.stringify({
-    type:"session.start",session_id:crypto.randomUUID(),sample_rate:16000,channels:1,encoding:"pcm_s16le"
-  }))};
-  ws.onerror=()=>write("ERROR: websocket error");
-  ws.onclose=e=>{status.textContent="Disconnected";write(`socket closed (code ${e.code})`);};
-
-  ws.onmessage=async e=>{
-    if(typeof e.data==="string"){
-      const m=JSON.parse(e.data); write(JSON.stringify(m));
-      if(m.type==="CLEAR_BUFFER")clearPlayback();
-      if(m.type==="audio.start"){currentGeneration=m.generation_id;workletNode.port.postMessage({type:"generation",id:currentGeneration});}
-      if(m.type==="audio"&&m.sample_rate){currentPlaybackRate=m.sample_rate;updateRateInfo();}
-      if((m.type==="session.ready"||m.type==="vad.config.ack")&&m.vad)setVadFromServer(m.vad);
-      if(m.type==="error"&&m.code==="INVALID_VAD_CONFIG")write("VAD config rejected: "+m.message);
-    }else{
-      // Resample from the TTS provider's real rate to the speakers' native rate.
-      const assumedRate=rateSimOverride!==null?rateSimOverride:currentPlaybackRate;
-      const f=downsample(pcmToFloat32(new Uint8Array(e.data)),assumedRate,audioContext.sampleRate);
-      workletNode.port.postMessage({type:"audio",generation:currentGeneration,samples:Array.from(f)});
-    }
-  };
-
-  const s=audioContext.createMediaStreamSource(stream);
-  processor=audioContext.createScriptProcessor(1024,1,1);
-  processor.onaudioprocess=e=>{
-    const down=downsample(e.inputBuffer.getChannelData(0),audioContext.sampleRate,16000);
-    let sumSq=0; for(let i=0;i<down.length;i++)sumSq+=down[i]*down[i];
-    const level=Math.sqrt(sumSq/down.length);
-    levelFillEl.style.width=Math.min(100,level/levelScale()*100)+"%";
-    if(ws.readyState!==WebSocket.OPEN)return;
-    ws.send(floatToPCM16(down));
-  };
-  s.connect(processor);processor.connect(audioContext.destination);
-  source=s;
-  document.getElementById("start").disabled=true;
-  document.getElementById("stop").disabled=false;
-}
-
-function stop(){
-  processor?.disconnect();source?.disconnect();stream?.getTracks().forEach(t=>t.stop());
-  clearPlayback(); if(ws?.readyState===WebSocket.OPEN)ws.send(JSON.stringify({type:"session.end"}));
-  ws?.close(); status.textContent="Disconnected";
-  document.getElementById("start").disabled=false;
-  document.getElementById("stop").disabled=true;
-}
-
-document.getElementById("start").onclick=start;
-document.getElementById("stop").onclick=stop;
-</script>
+  <footer class="footer"><span>OPEN VOICE ENGINE <span class="divider">/</span> LOCAL DEVELOPMENT</span><span>PCM audio · 20ms frames · Pure WebSockets</span></footer>
+</main>
+<dialog id="tourDialog" aria-labelledby="tourTitle" aria-describedby="tourDescription"><div id="tourFocus" aria-hidden="true"></div><div id="tourCard"><div class="tour-heading"><span id="tourProgress"></span><button class="button compact" id="tourSkip">Skip tour</button></div><h2 id="tourTitle"></h2><p id="tourDescription"></p><div class="tour-actions"><button class="button compact" id="tourBack">Back</button><button class="button primary compact" id="tourNext">Next</button></div></div></dialog>
+<script src="/static/console.js"></script>
+<script src="/static/tour.js"></script>
 </body>
 </html>

@@ -4,14 +4,17 @@ import asyncio
 import json
 import logging
 import secrets
+import sys
 from pathlib import Path
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, Response
+from fastapi.staticfiles import StaticFiles
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
 from voice_engine.config import Settings
 from voice_engine.core.agent import VoiceAgentPipeline
+from voice_engine.core.audio import AudioProfile, decode_audio
 from voice_engine.core.types import PipelineEvent
 from voice_engine.observability.logging import configure_logging
 from voice_engine.observability.metrics import ACTIVE_CONNECTIONS, SESSIONS
@@ -46,12 +49,47 @@ app = FastAPI(title="Open Voice Engine", version="0.1.0")
 _connection_count = 0
 _connection_lock = asyncio.Lock()
 BASE = Path(__file__).resolve().parents[3]
+STATIC = BASE / "static"
+if not STATIC.is_dir():
+    STATIC = Path(sys.prefix) / "share" / "open-voice-engine" / "static"
+app.mount("/static", StaticFiles(directory=STATIC), name="static")
+_benchmark_lock = asyncio.Lock()
 
 
 @app.get("/")
 async def index() -> FileResponse:
     """Serve the reference browser client."""
-    return FileResponse(BASE / "static" / "index.html")
+    return FileResponse(STATIC / "index.html")
+
+
+@app.get("/api/benchmark")
+async def benchmark(request: Request, concurrency: int = Query(30, ge=1, le=100),
+                    mode: str = "telephony") -> dict:
+    """Bounded loopback-only benchmark; honors the same token and origin policy."""
+    if settings.auth_token:
+        token = request.headers.get("authorization", "").removeprefix("Bearer ")
+        if not secrets.compare_digest(token, settings.auth_token):
+            raise HTTPException(401, "Invalid benchmark token")
+    origin = request.headers.get("origin")
+    if origin and not _origin_allowed(origin):
+        raise HTTPException(403, "Origin not allowed")
+    try:
+        AudioProfile.select(mode)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    if concurrency > settings.max_connections - _connection_count:
+        raise HTTPException(409, "Not enough connection slots for this benchmark")
+    if _benchmark_lock.locked():
+        raise HTTPException(409, "A benchmark is already running")
+    from voice_engine.benchmarks.stress_tester import run_benchmark
+
+    async with _benchmark_lock:
+        port = request.scope.get("server", (None, settings.port))[1] or settings.port
+        result = await run_benchmark(concurrency, mode, f"ws://127.0.0.1:{port}/ws/voice",
+                                     token=settings.auth_token,
+                                     origin=next(iter(settings.allowed_origins), "http://localhost:8000"))
+        result["providers"] = {"stt": settings.stt, "llm": settings.llm, "tts": settings.tts}
+        return result
 
 
 @app.get("/health")
@@ -72,13 +110,20 @@ async def metrics() -> Response:
     return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
-def _vad_config(vad: EnergyVAD) -> dict[str, float]:
+def _vad_config(pipeline: VoiceAgentPipeline) -> dict:
     """Report current thresholds/durations, e.g. to prefill a client's tuning UI."""
+    vad = pipeline.vad
     return {
         "speech_threshold": vad.speech_threshold,
         "silence_threshold": vad.silence_threshold,
         "min_speech_ms": vad.min_speech_frames * vad.frame_ms,
-        "min_silence_ms": vad.min_silence_frames * vad.frame_ms,
+        "min_silence_ms": pipeline.detector.base_silence_ms,
+        "effective_silence_ms": vad.min_silence_frames * vad.frame_ms,
+        "trailing_silence_ms": pipeline.detector.trailing_silence_ms,
+        "semantic_eot": pipeline.detector.semantic_enabled,
+        "barge_in_min_speech_ms": pipeline.guard.min_speech_ms,
+        "filter_backchannels": pipeline.guard.filter_backchannels,
+        "revision": pipeline.vad_revision,
     }
 
 
@@ -104,6 +149,17 @@ async def voice_socket(websocket: WebSocket) -> None:
         await websocket.close(code=1008)
         return
 
+    mode = websocket.query_params.get("mode", settings.mode)
+    codec = websocket.query_params.get("codec", settings.telephony_codec if mode == "telephony" else "pcm_s16le")
+    try:
+        profile = AudioProfile.select(mode, codec)
+
+        if codec == "mulaw":
+            decode_audio(b"\xff", codec)
+    except ValueError:
+        await websocket.close(code=1008)
+        return
+
     await websocket.accept()
 
     async with _connection_lock:
@@ -117,9 +173,9 @@ async def voice_socket(websocket: WebSocket) -> None:
 
     async def sink(event: PipelineEvent) -> None:
         payload = dict(event.data)
-        if event.type == "audio.chunk":
+        if event.type in {"audio.chunk", "input.audio"}:
             audio = payload.pop("audio")
-            payload["type"] = "audio"
+            payload["type"] = "audio" if event.type == "audio.chunk" else "input.audio"
             async with send_lock:
                 await websocket.send_json(payload)
                 await websocket.send_bytes(audio)
@@ -128,22 +184,23 @@ async def voice_socket(websocket: WebSocket) -> None:
         async with send_lock:
             await websocket.send_json(payload)
 
-    pipeline = VoiceAgentPipeline(
-        stt=create("stt", settings.stt),
-        llm=create("llm", settings.llm),
-        tts=create("tts", settings.tts),
-        vad=EnergyVAD(
-            sample_rate=settings.sample_rate,
-            speech_threshold=settings.vad_speech_threshold,
-            silence_threshold=settings.vad_silence_threshold,
-            min_speech_ms=settings.vad_min_speech_ms,
-            min_silence_ms=settings.vad_min_silence_ms,
-        ),
-        event_sink=sink,
-    )
-    SESSIONS.inc()
-
+    pipeline = None
     try:
+        pipeline = VoiceAgentPipeline(
+            stt=create("stt", settings.stt),
+            llm=create("llm", settings.llm),
+            tts=create("tts", settings.tts),
+            vad=EnergyVAD(
+                sample_rate=profile.sample_rate,
+                speech_threshold=settings.telephony_speech_threshold if mode == "telephony" else settings.vad_speech_threshold,
+                silence_threshold=settings.telephony_silence_threshold if mode == "telephony" else settings.vad_silence_threshold,
+                min_speech_ms=settings.vad_min_speech_ms,
+                min_silence_ms=profile.base_silence_ms,
+            ),
+            event_sink=sink,
+            profile=profile,
+        )
+        SESSIONS.inc()
         while True:
             message = await websocket.receive()
 
@@ -152,18 +209,14 @@ async def voice_socket(websocket: WebSocket) -> None:
 
             if message.get("bytes") is not None:
                 frame = message["bytes"]
-                if len(frame) == 0 or len(frame) > settings.max_frame_bytes or len(frame) % 2:
-                    await websocket.send_json({"type":"error","code":"INVALID_AUDIO_FRAME"})
-                    continue
-                for event in pipeline.vad.process(frame):
-                    if event.type == "speech_started":
-                        await pipeline.start_utterance()
-                    await pipeline.handle_vad_event(event.type)
-                    if event.type == "speech_ended":
-                        pipeline.feed_audio(frame)
-                        await pipeline.end_utterance()
-                if pipeline.vad.is_speaking:
-                    pipeline.feed_audio(frame)
+                try:
+                    if len(frame) > settings.max_frame_bytes:
+                        raise ValueError("Frame exceeds configured byte limit")
+                    await pipeline.process_audio(frame)
+                except ValueError as exc:
+                    await sink(PipelineEvent("error", {"code": "INVALID_AUDIO_FRAME", "message": str(exc)}))
+                    if "30 seconds" in str(exc):
+                        break
                 continue
 
             raw = message.get("text")
@@ -172,48 +225,85 @@ async def voice_socket(websocket: WebSocket) -> None:
             try:
                 payload = json.loads(raw)
             except json.JSONDecodeError:
-                await websocket.send_json({"type":"error","code":"INVALID_JSON"})
+                await sink(PipelineEvent("error", {"code": "INVALID_JSON"}))
+                continue
+
+            if not isinstance(payload, dict):
+                await sink(PipelineEvent("error", {"code": "INVALID_JSON", "message": "Expected a JSON object"}))
                 continue
 
             kind = payload.get("type")
             if kind == "session.start":
                 pipeline.session.session_id = str(payload.get("session_id", pipeline.session.session_id))
-                await websocket.send_json({
+                await sink(PipelineEvent("session.ready", {
                     "type": "session.ready",
                     "session_id": pipeline.session.session_id,
-                    "sample_rate": settings.sample_rate,
-                    "encoding": "pcm_s16le",
-                    "vad": _vad_config(pipeline.vad),
-                })
+                    "sample_rate": profile.sample_rate,
+                    "encoding": profile.encoding,
+                    "mode": profile.mode,
+                    "frame_ms": profile.frame_ms,
+                    "frame_bytes": profile.frame_bytes,
+                    "eot_silence_ms": profile.base_silence_ms,
+                    "providers": {"stt": settings.stt, "llm": settings.llm, "tts": settings.tts},
+                    "response_enabled": pipeline.response_enabled,
+                    "models": {"stt": getattr(pipeline.stt, "model_size", None),
+                               "llm": getattr(pipeline.llm, "model", None),
+                               "tts": getattr(pipeline.tts, "model", None)},
+                    "vad": _vad_config(pipeline),
+                }))
+            elif kind == "session.configure":
+                try:
+                    await pipeline.configure_response(payload.get("response_enabled"))
+                    await pipeline.emit("session.config.ack", response_enabled=pipeline.response_enabled)
+                except ValueError as exc:
+                    await pipeline.emit("error", code="INVALID_SESSION_CONFIG", message=str(exc))
+            elif kind == "input.monitor":
+                enabled = payload.get("enabled")
+                if isinstance(enabled, bool):
+                    pipeline.monitor_input = enabled
+                    await pipeline.emit("input.monitor.ack", enabled=enabled, sample_rate=16000)
+                else:
+                    await pipeline.emit("error", code="INVALID_MONITOR_CONFIG", message="enabled must be a boolean")
             elif kind == "user.text":
                 text = str(payload.get("text", "")).strip()
                 if text:
+                    if pipeline.playback_active:
+                        await pipeline.interrupt()
                     pipeline.start_response(text)
             elif kind == "interrupt":
                 await pipeline.interrupt()
+            elif kind in {"playback.ack", "playback.cleared"}:
+                await pipeline.acknowledge_playback(str(payload.get("generation_id", "")),
+                                                    payload.get("played_samples", 0),
+                                                    cleared=kind == "playback.cleared")
             elif kind == "vad.config":
                 try:
-                    pipeline.vad.configure(
+                    pipeline.configure_vad(
                         speech_threshold=payload.get("speech_threshold"),
                         silence_threshold=payload.get("silence_threshold"),
                         min_speech_ms=payload.get("min_speech_ms"),
                         min_silence_ms=payload.get("min_silence_ms"),
+                        semantic_eot=payload.get("semantic_eot"),
+                        trailing_silence_ms=payload.get("trailing_silence_ms"),
+                        barge_in_min_speech_ms=payload.get("barge_in_min_speech_ms"),
+                        filter_backchannels=payload.get("filter_backchannels"),
                     )
-                    await websocket.send_json({
-                        "type": "vad.config.ack",
-                        "vad": _vad_config(pipeline.vad),
-                    })
+                    await sink(PipelineEvent("vad.config.ack", {
+                        "vad": _vad_config(pipeline),
+                        "request_id": payload.get("request_id"),
+                    }))
+                    await pipeline.emit("turn.window", silence_ms=pipeline.detector.silence_ms,
+                                        reason=pipeline.detector.reason)
                 except (ValueError, TypeError) as exc:
-                    await websocket.send_json({
-                        "type": "error", "code": "INVALID_VAD_CONFIG", "message": str(exc),
-                    })
+                    await sink(PipelineEvent("error", {"code": "INVALID_VAD_CONFIG", "message": str(exc),
+                                                       "request_id": payload.get("request_id")}))
             elif kind == "session.end":
                 break
             else:
-                await websocket.send_json({
-                    "type":"error","code":"UNKNOWN_MESSAGE_TYPE",
+                await sink(PipelineEvent("error", {
+                    "code":"UNKNOWN_MESSAGE_TYPE",
                     "message":f"Unknown type: {kind}"
-                })
+                }))
     except WebSocketDisconnect:
         logger.info("client disconnected")
     except asyncio.CancelledError:
@@ -221,7 +311,10 @@ async def voice_socket(websocket: WebSocket) -> None:
     except Exception:
         logger.exception("websocket session failed")
     finally:
-        await pipeline.close()
-        async with _connection_lock:
-            _connection_count -= 1
-            ACTIVE_CONNECTIONS.dec()
+        try:
+            if pipeline:
+                await pipeline.close()
+        finally:
+            async with _connection_lock:
+                _connection_count -= 1
+                ACTIVE_CONNECTIONS.dec()

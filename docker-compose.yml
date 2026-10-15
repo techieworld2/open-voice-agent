@@ -3,9 +3,14 @@ services:
     build: .
     ports:
       - "8000:8000"
+    env_file:
+      - path: .env
+        required: false
     environment:
-      VOICE_ENGINE_STT: mock
-      VOICE_ENGINE_LLM: mock
-      VOICE_ENGINE_TTS: mock
-      VOICE_ENGINE_ALLOWED_ORIGINS: http://localhost:8000
+      VOICE_ENGINE_STT: ${VOICE_ENGINE_STT:-mock}
+      VOICE_ENGINE_LLM: ${VOICE_ENGINE_LLM:-mock}
+      VOICE_ENGINE_TTS: ${VOICE_ENGINE_TTS:-mock}
+      VOICE_ENGINE_MODE: ${VOICE_ENGINE_MODE:-wideband}
+      VOICE_ENGINE_TELEPHONY_CODEC: ${VOICE_ENGINE_TELEPHONY_CODEC:-pcm_s16le}
+      VOICE_ENGINE_ALLOWED_ORIGINS: ${VOICE_ENGINE_ALLOWED_ORIGINS:-http://localhost:8000,http://127.0.0.1:8000}
     restart: unless-stopped

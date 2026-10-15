@@ -15,12 +15,15 @@ class TextChunker:
         async for token in tokens:
             buffer += token
             stripped = buffer.rstrip()
-            if (
-                stripped.endswith((".", "!", "?", ",", ";", ":"))
-                or len(stripped) >= self.max_chars
-            ):
+            if stripped.endswith((".", "!", "?", ",", ";", ":")):
                 if stripped:
                     yield stripped
                 buffer = ""
+            elif len(stripped) >= self.max_chars:
+
+                boundary = buffer.rfind(" ", 0, self.max_chars + 1)
+                if boundary > 0:
+                    yield buffer[:boundary].strip()
+                    buffer = buffer[boundary + 1:]
         if buffer.strip():
             yield buffer.strip()

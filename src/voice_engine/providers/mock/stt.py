@@ -11,6 +11,9 @@ class MockSTT(BaseSTT):
     """Return a deterministic transcript after consuming audio."""
 
     async def transcribe(self, audio: AsyncIterator[bytes]) -> AsyncIterator[TranscriptEvent]:
+        frames = 0
         async for _ in audio:
-            pass
+            frames += 1
+            if frames == 5:
+                yield TranscriptEvent("Hello from the mock voice engine.", False)
         yield TranscriptEvent("Hello from the mock voice engine.", True)

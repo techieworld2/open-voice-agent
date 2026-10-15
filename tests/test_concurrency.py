@@ -32,7 +32,7 @@ async def test_pipeline_ahead_overlaps_work():
     elapsed = time.perf_counter() - started
 
     assert results == [1, 2, 3, 4]
-    # Fully serial would take ~0.2s; overlapped with lookahead=1 should be well under that.
+
     assert elapsed < 0.15
 
 
@@ -69,13 +69,13 @@ async def test_pipeline_ahead_no_deadlock_when_cancelled_mid_flight():
             yield i
 
     async def work(n):
-        await asyncio.sleep(5)  # never finishes within this test
+        await asyncio.sleep(5)
         return n
 
     gen = pipeline_ahead(fast_items(), work, lookahead=1)
     with pytest.raises(asyncio.TimeoutError):
         await asyncio.wait_for(gen.__anext__(), timeout=0.1)
-    # If cleanup deadlocked, this would hang too; bound it defensively.
+
     await asyncio.wait_for(gen.aclose(), timeout=1.0)
 
 
@@ -87,7 +87,7 @@ async def test_pipeline_ahead_first_result_not_stalled_by_slow_upstream():
 
     async def slow_upstream():
         yield 1
-        await asyncio.sleep(2)  # simulates an LLM still streaming its next phrase
+        await asyncio.sleep(2)
         yield 2
 
     async def work(n):

@@ -10,6 +10,7 @@ WORKDIR /app
 COPY pyproject.toml README.md LICENSE ./
 COPY src ./src
 COPY static ./static
+COPY benchmarks ./benchmarks
 
 RUN pip install --upgrade pip && pip install .
 EXPOSE 8000

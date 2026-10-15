@@ -30,7 +30,7 @@ async def test_speech_started_clears_buffer_even_after_generation_finished():
     async def sink(event): events.append(event.type)
     p = VoiceAgentPipeline(MockSTT(), MockLLM(), MockTTS(), EnergyVAD(), sink)
     p.start_response("hello")
-    await p.session.task  # let the (fast, mocked) generation run to completion
+    await p.session.task
     assert p.session.state.value == "listening"
 
     events.clear()

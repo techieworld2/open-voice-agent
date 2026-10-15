@@ -28,6 +28,7 @@ class EnergyVAD:
         if silence_threshold >= speech_threshold:
             raise ValueError("silence_threshold must be below speech_threshold")
         self.frame_ms = frame_ms
+        self.sample_rate = sample_rate
         self.min_speech_frames = max(1, math.ceil(min_speech_ms / frame_ms))
         self.min_silence_frames = max(1, math.ceil(min_silence_ms / frame_ms))
         self.speech_threshold = speech_threshold
@@ -72,6 +73,11 @@ class EnergyVAD:
         """Current VAD speech state."""
         return self._in_speech
 
+    @property
+    def silence_elapsed_ms(self) -> int:
+        """Current consecutive silence during an active utterance."""
+        return self._silence_frames * self.frame_ms
+
     def configure(
         self,
         speech_threshold: float | None = None,
@@ -82,6 +88,13 @@ class EnergyVAD:
         """Update thresholds/durations live, e.g. from a client-tunable UI."""
         new_speech = speech_threshold if speech_threshold is not None else self.speech_threshold
         new_silence = silence_threshold if silence_threshold is not None else self.silence_threshold
+        for value in (new_speech, new_silence):
+            if isinstance(value, bool) or not isinstance(value, (float, int)) or not math.isfinite(value) or not 0 < value <= 1:
+                raise ValueError("VAD thresholds must be finite numbers in (0, 1]")
+        for value in (min_speech_ms, min_silence_ms):
+            if value is not None and (isinstance(value, bool) or not isinstance(value, (float, int)) or
+                                      not math.isfinite(value) or not 0 < value <= 5000):
+                raise ValueError("VAD durations must be finite numbers in (0, 5000]")
         if new_silence >= new_speech:
             raise ValueError("silence_threshold must be below speech_threshold")
         self.speech_threshold = new_speech

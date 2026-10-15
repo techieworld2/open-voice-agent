@@ -23,6 +23,9 @@ class AudioChunk:
     channels: int = 1
 
 
+    word_end_samples: tuple[int, ...] = ()
+
+
 @dataclass(frozen=True)
 class TranscriptEvent:
     """Partial/final transcript."""
