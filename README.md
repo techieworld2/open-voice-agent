@@ -1,8 +1,8 @@
 # Open Voice Engine
 
-A provider-agnostic runtime for bidirectional voice over WebSockets, with a browser console for live audio tuning, interruption testing, and latency profiling.
+A provider-agnostic voice engine with WebSocket streaming, a FreeSWITCH SIP/RTP call lab, and browser dashboards for live audio tuning, interruption testing, and latency profiling.
 
-**Python 3.11+ · Pure WebSockets · Zero-build browser console · Key-free mock defaults**
+**Python 3.11+ · WebSockets + SIP/RTP · Zero-build dashboards · Key-free mock defaults**
 
 [Quick start](#quick-start) · [Browser console](#browser-console) · [SIP call lab](#sip-call-lab) · [Providers](#providers) · [Architecture](#architecture) · [Benchmarks](#benchmarks) · [Documentation](#documentation)
 
