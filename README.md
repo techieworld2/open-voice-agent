@@ -49,7 +49,9 @@ Configure providers in `.env` and restart the server after provider changes. Bro
 
 ## Browser console
 
-![Open Voice Engine console with collapsed settings, pipeline stages, and independent transcription](docs/images/console.png)
+![WebSocket console with mock-provider transcription, interrupted responses, live input monitoring, and five-second capture](docs/images/console.png)
+
+*Mock-provider session showing interruption history, the live input signal, and listening/capture controls.*
 
 The four settings panels start collapsed. Technical controls have **?** explanations on hover, keyboard focus, or tap.
 
@@ -83,6 +85,10 @@ PCM needs no codec extra. Python 3.11/3.12 includes `audioop`; for μ-law on Pyt
 ## SIP call lab
 
 Use a softphone such as Linphone to dial your agent through **FreeSWITCH running natively on Windows**. A separate **[SIP dashboard](http://localhost:8000/call-lab)** shares the console theme and displays live transcripts, VAD controls, interruptions, and timings. A local Python bridge adds optional delay, jitter, and packet loss to the FreeSWITCH-to-engine RTP leg.
+
+![FreeSWITCH SIP call dashboard with local Whisper transcription and received-input listening and capture controls](docs/images/call-lab.png)
+
+*Native SIP call in transcription-only mode, with local Whisper and received-input monitoring.*
 
 The dashboard can also play the caller audio received by STT, preview VAD gating, and capture/replay five seconds. Configure real providers in the lab's private `lab.env`; newly generated labs use mocks. Phone microphone processing remains in Linphone or the calling device.
 
