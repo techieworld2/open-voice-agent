@@ -40,7 +40,7 @@
   }
   function finish() {
     dialog.close(); originalPanels.forEach(([panel, open]) => { panel.open = open; });
-    try { localStorage.setItem(storageKey, "seen"); } catch (_) {}
+    try { localStorage.setItem(storageKey, "seen"); } catch {}
     window.scrollTo({top: scrollPosition, behavior: "instant"}); returnFocus?.focus({preventScroll: true});
   }
   function start() {
@@ -55,6 +55,6 @@
   get("tourBack").onclick = () => { if (index > 0) { index--; show(); } };
   dialog.addEventListener("cancel", event => { event.preventDefault(); finish(); });
   window.addEventListener("resize", schedule); window.addEventListener("scroll", schedule, true);
-  let seen = false; try { seen = localStorage.getItem(storageKey) === "seen"; } catch (_) {}
+  let seen = false; try { seen = localStorage.getItem(storageKey) === "seen"; } catch {}
   if (!seen) setTimeout(() => { if (!hasStarted) start(); }, 350);
 })();

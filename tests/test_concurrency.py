@@ -102,3 +102,44 @@ async def test_pipeline_ahead_first_result_not_stalled_by_slow_upstream():
     assert first == 1
     assert elapsed < 0.5
     await gen.aclose()
+
+
+@pytest.mark.asyncio
+async def test_pipeline_ahead_propagates_upstream_error_after_queued_results():
+    async def items():
+        yield 1
+        raise ValueError("Upstream text stream failed")
+
+    async def work(item):
+        return item * 2
+
+    generator = pipeline_ahead(items(), work)
+    async with asyncio.timeout(.5):
+        assert await generator.__anext__() == 2
+        with pytest.raises(ValueError, match="Upstream text stream failed"):
+            await generator.__anext__()
+
+
+@pytest.mark.asyncio
+async def test_pipeline_ahead_close_cancels_every_started_worker():
+    started, cancelled = set(), set()
+
+    async def items():
+        for item in range(20):
+            yield item
+
+    async def work(item):
+        started.add(item)
+        try:
+            await asyncio.sleep(.02 if item == 0 else 10)
+            return item
+        except asyncio.CancelledError:
+            cancelled.add(item)
+            raise
+
+    generator = pipeline_ahead(items(), work, lookahead=1)
+    async with asyncio.timeout(.5):
+        assert await generator.__anext__() == 0
+        await generator.aclose()
+    assert len(started) >= 2
+    assert started - {0} == cancelled

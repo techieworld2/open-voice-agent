@@ -19,3 +19,4 @@ logs
 *.log
 .vscode
 .idea
+call-lab/freeswitch

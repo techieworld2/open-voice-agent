@@ -2,6 +2,7 @@
 .env
 .env.local
 .env.*.local
+call-lab/freeswitch/
 !.env.example
 
 # Byte-compiled / optimized / DLL files

@@ -15,16 +15,25 @@ async def pipeline_ahead(
     lookahead: int = 1,
 ) -> AsyncIterator[Out_]:
     """Run `work` on up to `lookahead + 1` upcoming items concurrently, yielding results in input order."""
+    if lookahead < 0:
+        raise ValueError("lookahead must be non-negative")
     queue: "asyncio.Queue[object]" = asyncio.Queue(maxsize=lookahead + 1)
+    slots = asyncio.Semaphore(lookahead + 1)
+    workers: set[asyncio.Task[Out_]] = set()
 
     async def producer() -> None:
         try:
             async for item in items:
+                await slots.acquire()
                 task = asyncio.create_task(work(item))
+                workers.add(task)
                 await queue.put(task)
-            await queue.put(_SENTINEL)
         except asyncio.CancelledError:
-            pass
+            raise
+        except Exception as exc:
+            await queue.put(exc)
+        else:
+            await queue.put(_SENTINEL)
 
     producer_task = asyncio.create_task(producer())
     try:
@@ -32,21 +41,18 @@ async def pipeline_ahead(
             task = await queue.get()
             if task is _SENTINEL:
                 break
-            yield await task
-        if producer_task.done() and (exc := producer_task.exception()):
-            raise exc
+            if isinstance(task, Exception):
+                raise task
+            try:
+                result = await task
+            finally:
+                workers.discard(task)
+                slots.release()
+            yield result
     finally:
         producer_task.cancel()
-        try:
-            await producer_task
-        except (asyncio.CancelledError, Exception):
-            pass
-        while not queue.empty():
-            task = queue.get_nowait()
-            if task is _SENTINEL:
-                continue
+        await asyncio.gather(producer_task, return_exceptions=True)
+        for task in workers:
             task.cancel()
-            try:
-                await task
-            except (asyncio.CancelledError, Exception):
-                pass
+        if workers:
+            await asyncio.gather(*workers, return_exceptions=True)

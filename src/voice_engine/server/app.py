@@ -18,10 +18,8 @@ from voice_engine.core.audio import AudioProfile, decode_audio
 from voice_engine.core.types import PipelineEvent
 from voice_engine.observability.logging import configure_logging
 from voice_engine.observability.metrics import ACTIVE_CONNECTIONS, SESSIONS
-from voice_engine.providers.mock import stt as _mock_stt
-from voice_engine.providers.mock import llm as _mock_llm
-from voice_engine.providers.mock import tts as _mock_tts
 from voice_engine.providers.registry import create
+from voice_engine.server.call_lab import create_call_lab_router
 from voice_engine.vad.energy import EnergyVAD
 
 configure_logging()
@@ -31,8 +29,6 @@ settings = Settings()
 
 def _load_optional_provider(kind: str, name: str) -> None:
     """Import a provider module so its @register decorator runs."""
-    if name == "mock":
-        return
     try:
         __import__(f"voice_engine.providers.{name}.{kind}")
     except ModuleNotFoundError as exc:
@@ -60,6 +56,46 @@ _benchmark_lock = asyncio.Lock()
 async def index() -> FileResponse:
     """Serve the reference browser client."""
     return FileResponse(STATIC / "index.html")
+
+
+@app.get("/call-lab")
+async def call_lab_page() -> FileResponse:
+    return FileResponse(STATIC / "call-lab.html")
+
+
+def _create_pipeline(profile, sink):
+    telephony = profile.mode == "telephony"
+    return VoiceAgentPipeline(
+        stt=create("stt", settings.stt), llm=create("llm", settings.llm), tts=create("tts", settings.tts),
+        vad=EnergyVAD(
+            sample_rate=profile.sample_rate,
+            speech_threshold=settings.telephony_speech_threshold if telephony else settings.vad_speech_threshold,
+            silence_threshold=settings.telephony_silence_threshold if telephony else settings.vad_silence_threshold,
+            min_speech_ms=settings.vad_min_speech_ms, min_silence_ms=profile.base_silence_ms,
+        ), event_sink=sink, profile=profile,
+    )
+
+
+async def _acquire_lab_slot():
+    global _connection_count
+    async with _connection_lock:
+        if _connection_count >= settings.max_connections:
+            return False
+        _connection_count += 1
+        ACTIVE_CONNECTIONS.inc()
+        SESSIONS.inc()
+        return True
+
+
+async def _release_lab_slot():
+    global _connection_count
+    async with _connection_lock:
+        _connection_count -= 1
+        ACTIVE_CONNECTIONS.dec()
+
+
+call_lab_router = create_call_lab_router(settings, _create_pipeline, _acquire_lab_slot, _release_lab_slot)
+app.include_router(call_lab_router)
 
 
 @app.get("/api/benchmark")
@@ -186,20 +222,7 @@ async def voice_socket(websocket: WebSocket) -> None:
 
     pipeline = None
     try:
-        pipeline = VoiceAgentPipeline(
-            stt=create("stt", settings.stt),
-            llm=create("llm", settings.llm),
-            tts=create("tts", settings.tts),
-            vad=EnergyVAD(
-                sample_rate=profile.sample_rate,
-                speech_threshold=settings.telephony_speech_threshold if mode == "telephony" else settings.vad_speech_threshold,
-                silence_threshold=settings.telephony_silence_threshold if mode == "telephony" else settings.vad_silence_threshold,
-                min_speech_ms=settings.vad_min_speech_ms,
-                min_silence_ms=profile.base_silence_ms,
-            ),
-            event_sink=sink,
-            profile=profile,
-        )
+        pipeline = _create_pipeline(profile, sink)
         SESSIONS.inc()
         while True:
             message = await websocket.receive()

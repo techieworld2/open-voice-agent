@@ -4,7 +4,7 @@ let ws, stream, context, source, capture, player, inputGain, outputGain, fileSou
 let generation = null, metadata = null, encoding = "pcm_s16le";
 let ready = false, starting = false, closing = false, inputPaused = false, playbackPaused = false;
 let runId = 0, currentUtterance = 0, serverVad = null, vadTimer;
-let vadRequestId = 0, vadEditVersion = 0, pendingVad = null, lastVadStatus = null;
+let vadRequestId = 0, vadEditVersion = 0, pendingVad = null;
 let recording = false, recordedFrames = [], recordedRate = 16000, recordingSamples = 0;
 let recordedClip = null, localPreview = false, audioFileBuffer = null;
 let monitoring = false, monitorSamples = 0, captureChanges = Promise.resolve();
@@ -185,7 +185,7 @@ async function applyCapture() {
         const restore = {channelCount: {ideal: 1}};
         if (previousSettings.deviceId) restore.deviceId = {exact: previousSettings.deviceId};
         for (const name of ["echoCancellation", "noiseSuppression", "autoGainControl"]) if (typeof previousSettings[name] === "boolean") restore[name] = {exact: previousSettings[name]};
-        try { restored = connect(await navigator.mediaDevices.getUserMedia({audio: restore})); } catch (_) {}
+        try { restored = connect(await navigator.mediaDevices.getUserMedia({audio: restore})); } catch {}
       }
       if (version !== runId || revision !== captureRevision) return;
       if (restored) {
@@ -249,7 +249,6 @@ function editVad(id) {
   if (!vadTimer) vadTimer = setTimeout(sendVad, 80);
 }
 function displayVadStatus(message) {
-  lastVadStatus = message;
   el("liveVad").textContent = message.speaking ? "VAD · speech detected" : "VAD · waiting for speech";
   el("liveVad").dataset.state = message.speaking ? "speech" : "silence";
   el("liveVad").title = `Server RMS ${Number(message.rms).toFixed(3)} · silence ${message.silence_ms}/${message.effective_silence_ms}ms · config r${message.revision}`;
@@ -427,7 +426,7 @@ function handleMessage(data) {
 async function start() {
   if (starting || ready) return;
   const version = ++runId; starting = true; closing = false; currentUtterance = 0; serverVad = null;
-  pendingVad = lastVadStatus = null; vadRequestId = vadEditVersion = 0;
+  pendingVad = null; vadRequestId = vadEditVersion = 0;
   captureChanges = Promise.resolve(); captureRefreshing = false; lastCaptureSettings = null; el("retryCapture").hidden = true;
   blockedGenerations.clear(); notice(""); updateControls(); connection("connecting"); activity("Preparing audio and WebSocket connection…");
   try {
@@ -465,14 +464,14 @@ async function start() {
 async function stop() {
   if (closing) return; closing = true; runId++; ready = starting = false; clearTimeout(vadTimer);
   if (recording) finishRecording(); player?.port.postMessage({type: "clear"}); send({type: "session.end"}); ws?.close(); stream?.getTracks().forEach(track => track.stop());
-  try { fileSource?.stop(); previewSource?.stop(); } catch (_) {}
+  try { fileSource?.stop(); previewSource?.stop(); } catch {}
   source?.disconnect(); capture?.disconnect(); player?.disconnect(); monitorPlayer?.disconnect(); monitorGain?.disconnect(); const ac = context;
   ws = stream = context = source = capture = player = inputGain = outputGain = fileSource = previewSource = generation = metadata = null;
   monitorPlayer = monitorGain = null; monitoring = false; monitorSamples = 0;
   captureRefreshing = false; lastCaptureSettings = null; el("retryCapture").hidden = true;
   el("monitorInput").textContent = "Listen to my input"; el("monitorInput").setAttribute("aria-pressed", "false");
   inputPaused = playbackPaused = localPreview = false;
-  pendingVad = lastVadStatus = null; el("liveVad").textContent = "VAD · offline"; el("liveVad").dataset.state = "idle";
+  pendingVad = null; el("liveVad").textContent = "VAD · offline"; el("liveVad").dataset.state = "idle";
   el("appliedVad").textContent = "Server settings appear after connection.";
   el("pauseInput").textContent = "Pause input"; el("pausePlayback").textContent = "Pause agent"; el("playClip").textContent = "Play capture"; el("streamFile").textContent = "Stream file as caller audio";
   connection("idle"); updateControls(); activity("Session stopped. Your tuning and captured audio remain in this page.", "idle");
@@ -504,7 +503,7 @@ el("pausePlayback").onclick = () => { playbackPaused = !playbackPaused; playback
 el("flushPlayback").onclick = () => { if (generation) blockedGenerations.add(generation); player?.port.postMessage({type: "clear"}); metadata = null; send({type: "interrupt"}); log("playback.flush requested"); };
 el("clearTranscript").onclick = () => { rows.clear(); el("transcript").replaceChildren(); };
 el("clearLog").onclick = () => { logLines = []; el("log").textContent = "Awaiting session events."; };
-el("copyLog").onclick = async () => { try { await navigator.clipboard.writeText(logLines.join("\n")); el("copyLog").textContent = "Copied"; setTimeout(() => { el("copyLog").textContent = "Copy"; }, 1500); } catch (_) { notice("Copy is unavailable here. Select the protocol text to copy it manually."); } };
+el("copyLog").onclick = async () => { try { await navigator.clipboard.writeText(logLines.join("\n")); el("copyLog").textContent = "Copied"; setTimeout(() => { el("copyLog").textContent = "Copy"; }, 1500); } catch { notice("Copy is unavailable here. Select the protocol text to copy it manually."); } };
 el("textForm").onsubmit = event => { event.preventDefault(); const text = el("text").value.trim(); if (text && ready) { notice(""); send({type: "user.text", text}); row("Caller · text").text.textContent = text; el("text").value = ""; } };
 el("benchmark").onclick = async () => {
   el("benchmark").disabled = true; el("benchmarkStatus").textContent = "Running 30 concurrent calls…"; el("results").replaceChildren();

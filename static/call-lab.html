@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light">
+<title>SIP Call Lab · Open Voice Engine</title>
+<link rel="stylesheet" href="/static/console.css">
+<link rel="stylesheet" href="/static/call-lab.css">
+</head>
+<body>
+<header class="topbar">
+  <a class="brand" href="/" aria-label="Open Voice Engine home"><span class="brand-mark">ov</span><span>Open Voice Engine</span></a>
+  <nav class="lab-navigation" aria-label="Audio labs"><a href="/">WebSocket console</a><a href="/call-lab" aria-current="page">SIP call lab</a></nav>
+  <a class="utility-link" href="https://www.linphone.org/en/download/" target="_blank" rel="noopener">Get Linphone ↗</a>
+</header>
+<main class="workspace">
+  <div class="page-heading">
+    <div><span class="eyebrow">LOCAL TELEPHONY</span><h1>SIP call lab</h1><p>Call your agent through a softphone. Inspect and tune the call here.</p></div>
+    <div class="session-actions"><span class="connection-state" id="labConnection"><i></i><span id="labConnectionText">Connecting dashboard</span></span><button class="button" id="hangup" disabled>End selected call</button></div>
+  </div>
+  <div class="notice" id="labNotice" role="alert" hidden></div>
+  <section class="metrics" aria-label="Call telemetry">
+    <div class="metric"><span>Call transport</span><strong>8kHz SIP / RTP</strong><small>G.711 μ-law · mono · 20ms</small></div>
+    <div class="metric"><span>Semantic end of turn</span><strong id="labEot">350ms Complete</strong><small>Live silence window</small></div>
+    <div class="metric"><span>Time to first audio</span><strong id="labTtfa">— <em>ms</em></strong><small>End of speech → gateway audio</small></div>
+    <div class="metric"><span>Barge-in cancellation</span><strong id="labCancel">— <em>ms</em></strong><small id="flushDetail">Agent stream cancellation</small></div>
+  </section>
+  <div class="lab-layout">
+    <aside class="settings" aria-label="Call lab settings">
+      <details class="settings-group" open>
+        <summary><span><b>01</b> Connect a phone</span><span class="chevron">⌄</span></summary>
+        <div class="settings-body">
+          <ol class="connection-steps"><li>Start the optional call lab using the commands below.</li><li>Add a SIP account in Linphone using these details.</li><li>Dial <strong>7000</strong> to reach the voice agent.</li></ol>
+          <dl class="sip-details"><dt>SIP domain</dt><dd id="sipHost">Your computer’s LAN IP</dd><dt>Server port</dt><dd id="sipPort">5060</dd><dt>Username</dt><dd>1001</dd><dt>Password</dt><dd>From the generated FreeSWITCH lab.env</dd><dt>Agent extension</dt><dd>7000</dd></dl>
+          <p class="help">Keep the SIP domain free of a port. Set Registrar URI to sip:HOST:PORT. TCP signaling avoids local UDP port conflicts when Linphone and FreeSWITCH share a computer. Voice uses PCMU / G.711 μ-law RTP.</p>
+          <label class="field-label" for="labToken">Dashboard token, if configured</label><input type="password" id="labToken" autocomplete="off" placeholder="VOICE_ENGINE_AUTH_TOKEN"><button class="button full" id="connectDashboard">Connect dashboard</button>
+        </div>
+      </details>
+      <details class="settings-group">
+        <summary><span><b>02</b> Voice activity &amp; turns</span><span class="chevron">⌄</span></summary>
+        <div class="settings-body" id="callControls">
+          <p class="help">Changes apply to the selected active call without hanging up.</p>
+          <label class="field-label" for="callBehavior">Session behavior</label><select id="callBehavior" disabled><option value="conversation">Conversation</option><option value="transcription">Transcription only</option></select>
+          <label class="field-label" for="labSpeech">Speech threshold <span class="inline-help" tabindex="0" title="Minimum RMS energy required to start detecting speech. Raise it when noise triggers the agent.">?</span></label><input id="labSpeech" type="number" min="0.001" max="1" step="0.001" value="0.025" disabled>
+          <label class="field-label" for="labSilence">Silence threshold <span class="inline-help" tabindex="0" title="Energy below this value counts as silence after speech begins. Keep it below the speech threshold.">?</span></label><input id="labSilence" type="number" min="0.001" max="1" step="0.001" value="0.018" disabled>
+          <label class="field-label" for="labMinSpeech">Minimum speech · ms <span class="inline-help" tabindex="0" title="How long audio must stay above the speech threshold before VAD starts an utterance. Raise it to reject short clicks or bursts; lower it to detect short words sooner. The barge-in speech gate is a separate setting.">?</span></label><input id="labMinSpeech" type="number" min="20" max="5000" step="20" value="100" disabled>
+          <label class="field-label" for="labMinSilence">Complete clause silence · ms <span class="inline-help" tabindex="0" title="How long VAD waits in silence before ending a turn that has no detected trailing clause. Lower values make replies faster but can split natural pauses. Higher values give the caller more time to continue. With semantic end of turn off, this window applies to all turns.">?</span></label><input id="labMinSilence" type="number" min="20" max="5000" step="10" value="350" disabled>
+          <label class="field-label" for="labTrailing">Trailing clause silence · ms <span class="inline-help" tabindex="0" title="Wait longer after unfinished thoughts, such as a sentence ending with ‘because’ or ‘and’.">?</span></label><input id="labTrailing" type="number" min="20" max="5000" step="10" value="1100" disabled>
+          <label class="field-label" for="labBarge">Barge-in speech gate · ms <span class="inline-help" tabindex="0" title="Continuous speech needed before interrupting playback. A 320ms minimum filters short acoustic bursts.">?</span></label><input id="labBarge" type="number" min="320" max="5000" step="20" value="320" disabled>
+          <div class="switch-row"><label for="labSemantic">Semantic end of turn <span class="inline-help" tabindex="0" title="Uses the available transcript to extend the silence window after unfinished thoughts, such as words ending in ‘because’ or ‘and’. This is a text heuristic, not a separate AI model. Turn it off to use the complete clause silence window for every turn.">?</span></label><input type="checkbox" id="labSemantic" checked disabled></div>
+          <div class="switch-row"><label for="labBackchannels">Ignore passive backchannels <span class="inline-help" tabindex="0" title="Keeps the agent speaking when the caller says a short acknowledgement such as ‘yeah’, ‘okay’, or ‘mhm’. Turn it off if those acknowledgements should interrupt the agent. Recognized speech must still satisfy the barge-in speech gate.">?</span></label><input type="checkbox" id="labBackchannels" checked disabled></div>
+          <p class="control-state" id="callSettingsStatus" aria-live="polite">Waiting for a call</p>
+        </div>
+      </details>
+      <details class="settings-group">
+        <summary><span><b>03</b> RTP network conditions</span><span class="chevron">⌄</span></summary>
+        <div class="settings-body">
+          <label class="field-label" for="networkPreset">Network preset <span class="inline-help" tabindex="0" title="Adds delay, jitter, and packet loss in both directions of the FreeSWITCH-to-engine RTP leg. It affects all lab calls; phone-to-FreeSWITCH traffic is not altered.">?</span></label>
+          <select id="networkPreset" disabled><option value="clean">Clean · no added impairment</option><option value="mobile">Mobile-like · 80ms ± 20ms, 1% loss</option><option value="unstable">Unstable · 160ms ± 60ms, 5% loss</option></select>
+          <p class="help">Values are added per direction. Presets are repeatable test conditions, not measurements of a carrier.</p>
+          <p class="help" id="networkScope">Scope: FreeSWITCH ↔ engine RTP. The phone’s network connection is separate.</p>
+          <p class="control-state" id="networkStatus" aria-live="polite">Checking RTP controller</p>
+        </div>
+      </details>
+      <details class="settings-group">
+        <summary><span><b>04</b> Listen &amp; capture input</span><span class="chevron">⌄</span></summary>
+        <div class="settings-body">
+          <p class="help">Hear the selected caller’s audio as it reaches STT, after G.711 decoding and resampling. Use headphones to avoid sending the preview back into the call.</p>
+          <label class="field-label" for="labMonitorSource">Preview source <span class="inline-help" tabindex="0" title="Received input plays all audio reaching STT. VAD speech gate mutes only this preview when server VAD detects silence. It does not change transcription input.">?</span></label>
+          <select id="labMonitorSource"><option value="input">Received STT input</option><option value="vad">VAD speech gate</option></select>
+          <label class="field-label" for="labMonitorBuffer">Preview buffer · ms <span class="inline-help" tabindex="0" title="A larger buffer smooths uneven browser delivery but adds listening delay. This affects the dashboard preview, not the handset or agent audio.">?</span></label>
+          <input id="labMonitorBuffer" type="number" min="0" max="500" step="20" value="60">
+          <label class="field-label" for="labMonitorVolume">Preview volume <span id="labMonitorVolumeValue">50%</span></label>
+          <input id="labMonitorVolume" type="range" min="0" max="100" value="50">
+          <button class="button full" id="labListen" aria-pressed="false" disabled>Listen to caller input</button>
+          <button class="button full" id="labCapture" disabled>Capture 5 seconds</button>
+          <button class="button full" id="labPlayCapture" disabled>Play capture</button>
+          <p class="control-state" id="labMonitorStatus" role="status">Select an active call. Preview plays through this browser.</p>
+          <p class="help">Echo cancellation, noise suppression, microphone selection, and handset playback buffering are controlled by Linphone or the calling device. Changes made there are audible in this received-input preview.</p>
+        </div>
+      </details>
+    </aside>
+    <div class="main-column">
+      <section class="panel" id="setupPanel">
+        <div class="panel-heading"><div><h2>Start the local call lab</h2><span class="section-note">Native Windows FreeSWITCH · key-free mock defaults</span></div><span class="tag" id="labSetupState">Checking configuration</span></div>
+        <div class="lab-setup"><p>Install a trusted native Windows FreeSWITCH build, then generate the isolated lab configuration:</p><pre tabindex="0">python -m tools.setup_freeswitch_lab --host YOUR_LAN_IP
+python -m tools.run_freeswitch_lab --freeswitch-dir "C:\Program Files\FreeSWITCH"</pre><p>The setup prints your SIP password and dashboard token. The launcher starts FreeSWITCH and this server using private configuration files. A gateway health check below confirms whether FreeSWITCH is actually available.</p><p class="gateway-status" id="gatewayStatus" role="status">Checking the SIP gateway</p><p>Mock STT returns test text and mock TTS plays tones. Configure real providers for spoken conversation.</p></div>
+      </section>
+      <section class="panel">
+        <div class="panel-heading"><div><h2>Call inspection</h2><span class="section-note" id="providerSummary">Waiting for provider configuration</span></div><label class="call-picker">Selected call <select id="callSelect" aria-label="Selected call"><option value="">No calls yet</option></select></label></div>
+        <div class="pipeline"><div class="stage" id="labStageStt"><span class="stage-label">TRANSCRIPTION</span><strong id="labProviderStt">—</strong><span class="stage-state">Idle</span></div><span class="stage-arrow">→</span><div class="stage" id="labStageLlm"><span class="stage-label">RESPONSE</span><strong id="labProviderLlm">—</strong><span class="stage-state">Idle</span></div><span class="stage-arrow">→</span><div class="stage" id="labStageTts"><span class="stage-label">SYNTHESIS</span><strong id="labProviderTts">—</strong><span class="stage-state">Idle</span></div></div>
+        <div class="activity-strip"><span class="activity-dot" id="labActivityDot"></span><span id="labActivity">Register your softphone, then dial 7000.</span></div>
+        <div id="labTranscript" class="transcript" aria-label="Call transcript" aria-live="polite"><div class="empty-state"><h3>Ready for your first call</h3><p>Your phone carries the audio.<br>This page shows transcripts, interruptions, and timings.</p></div></div>
+        <div class="call-footnote"><span id="callFrames">0 received / 0 sent frames</span><span id="playbackBasis">Context sync uses a conservative RTP transmission estimate. Handset playback is not measured.</span></div>
+      </section>
+      <section class="panel events-panel"><div class="panel-heading"><div><h2>Call events</h2><span class="section-note">Latest 200 events per call · retained in server memory</span></div></div><pre id="labLog" tabindex="0">Waiting for a call.</pre></section>
+    </div>
+  </div>
+  <footer class="footer"><span>OPEN VOICE ENGINE / SIP CALL LAB</span><span>Local VoIP testing · carrier and cellular behavior require separate validation</span></footer>
+</main>
+<script src="/static/call-lab-monitor.js"></script>
+<script src="/static/call-lab.js"></script>
+</body>
+</html>

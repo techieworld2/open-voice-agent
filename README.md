@@ -4,7 +4,7 @@ A provider-agnostic runtime for bidirectional voice over WebSockets, with a brow
 
 **Python 3.11+ · Pure WebSockets · Zero-build browser console · Key-free mock defaults**
 
-[Quick start](#quick-start) · [Browser console](#browser-console) · [Providers](#providers) · [Architecture](#architecture) · [Benchmarks](#benchmarks) · [Documentation](#documentation)
+[Quick start](#quick-start) · [Browser console](#browser-console) · [SIP call lab](#sip-call-lab) · [Providers](#providers) · [Architecture](#architecture) · [Benchmarks](#benchmarks) · [Documentation](#documentation)
 
 ## Quick start
 
@@ -17,6 +17,7 @@ Run from the repository directory with Python 3.11 or newer. The default configu
 git clone https://github.com/techieworld2/open-voice-agent.git
 cd open-voice-agent
 python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install --upgrade pip
 .\.venv\Scripts\python.exe -m pip install -e ".[dev]"
 Copy-Item .env.example .env
 .\.venv\Scripts\python.exe -m uvicorn voice_engine.server.app:app --host 127.0.0.1 --port 8000
@@ -32,6 +33,7 @@ git clone https://github.com/techieworld2/open-voice-agent.git
 cd open-voice-agent
 python3 -m venv .venv
 source .venv/bin/activate
+python -m pip install --upgrade pip
 python -m pip install -e ".[dev]"
 cp .env.example .env
 voice-engine dev --host 127.0.0.1 --port 8000
@@ -74,9 +76,24 @@ See the **[audio tuning guide](docs/audio-guide.md)** for VAD definitions, prese
 
 Every frame represents **20ms**. Phone simulation applies a **300–3400Hz bandpass** on microphone and speaker paths. STT receives 16kHz mono PCM; telephony input retains its narrowband detail after upsampling.
 
-Connect to `/ws/voice?mode=wideband` or `/ws/voice?mode=telephony&codec=mulaw`. Omitted parameters use `.env` defaults. This is phone-acoustic simulation over WebSockets; no WebRTC or SIP transport is involved.
+Connect to `/ws/voice?mode=wideband` or `/ws/voice?mode=telephony&codec=mulaw`. Omitted parameters use `.env` defaults. These browser profiles simulate phone acoustics over WebSockets. The optional SIP call lab below adds a real SIP/RTP leg without WebRTC.
 
 PCM needs no codec extra. Python 3.11/3.12 includes `audioop`; for μ-law on Python 3.13+, install `python -m pip install -e ".[mulaw]"`.
+
+## SIP call lab
+
+Use a softphone such as Linphone to dial your agent through **FreeSWITCH running natively on Windows**. A separate **[SIP dashboard](http://localhost:8000/call-lab)** shares the console theme and displays live transcripts, VAD controls, interruptions, and timings. A local Python bridge adds optional delay, jitter, and packet loss to the FreeSWITCH-to-engine RTP leg.
+
+The dashboard can also play the caller audio received by STT, preview VAD gating, and capture/replay five seconds. Configure real providers in the lab's private `lab.env`; newly generated labs use mocks. Phone microphone processing remains in Linphone or the calling device.
+
+```bash
+python -m tools.setup_freeswitch_lab --host YOUR_LAN_IPV4
+python -m tools.run_freeswitch_lab --freeswitch-dir "C:\Program Files\FreeSWITCH"
+```
+
+Requires a trusted native Windows FreeSWITCH installation with its standard SIP and event-socket modules. No Docker, Ubuntu, paid streaming module, or C++ gateway build is required for this adapter. Setup prints a private SIP password and dashboard token. Register softphone account **1001** against your computer's LAN IP and dial **7000**. Defaults use mocks and require no public phone number or paid API keys. The original browser console runs independently of FreeSWITCH.
+
+See the **[call lab guide](docs/call-lab.md)** for account setup, network presets, real providers, the `python -m tools.sip_probe` smoke call, and measurement boundaries. This tests local VoIP behavior; cellular and carrier behavior still need real-network validation.
 
 ## Providers
 
@@ -133,6 +150,11 @@ For vLLM/Ollama, configure `VOICE_ENGINE_LLM_URL` and `VOICE_ENGINE_LLM_MODEL` f
  Playback watermark --> truncate assistant history --> context.sync
 
  Benchmark API / CLI --> concurrent WebSocket callers --> latency percentiles
+
+ Optional SIP lab:
+ Softphone -- SIP + RTP --> FreeSWITCH -- loopback SIP/RTP --> same voice pipeline
+                                             |                      |
+                                       RTP impairments      /call-lab dashboard
 ```
 
 Semantic endings adjust silence windows; short bursts and passive backchannels are filtered before interruption. See [turn detection and interruption details](docs/audio-guide.md#turn-detection-and-interruptions) for the heuristics and timing.
@@ -183,6 +205,7 @@ Compose loads `.env` when present; the optional `env_file` configuration require
 
 - [Audio tuning guide](docs/audio-guide.md) — VAD definitions, live listening, presets, semantic turns, and interruption precision.
 - [WebSocket protocol](docs/protocol.md) — connection profiles, controls, audio framing, events, and metric definitions.
+- [SIP call lab](docs/call-lab.md) — native FreeSWITCH setup, softphone extensions, RTP impairment, and call validation.
 - [Environment reference](.env.example) — provider models, keys, endpoints, and server defaults.
 - [Custom provider example](examples/custom_provider.py) · [Contributing](CONTRIBUTING.md)
 
